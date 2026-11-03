@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深大粤海校区通行效率与通勤分析（轨迹重建）</title>
+<style>/*__LEAFLET_CSS__*/</style>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb; --page: #f9f9f7; --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --map-bg: #f1f4eb; --bld: #e0dad1; --bld-line: #c7c0b5; --water: #c0dfe8; --green: #dce8d0; --road: #c6cbc4; --road-major: #d7c393;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d; --text-primary: #ffffff; --text-secondary: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --map-bg: #22241f; --bld: #3a3833; --bld-line: #4a4740; --water: #27404a; --green: #2a3526; --road: #55584f; --road-major: #6d6345;
+  }
+}
+html, body, #m { height: 100%; margin: 0; }
+body { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text-primary); background: var(--page); }
+#m { background: var(--map-bg); }
+.box { position: absolute; z-index: 1000; background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+       border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.18); }
+#panel { top: 10px; right: 10px; width: 300px; max-height: calc(100% - 20px); overflow: auto; padding: 10px 12px; }
+#drawer { left: 10px; bottom: 10px; width: min(760px, calc(100% - 340px)); max-height: 46%; display: flex; flex-direction: column; }
+#drawer.collapsed .body { display: none; }
+#drawer .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--grid); }
+#drawer .tabs button { border: 0; background: none; color: var(--text-secondary); padding: 5px 8px; border-radius: 6px 6px 0 0; cursor: pointer; font: inherit; }
+#drawer .tabs button.on { color: var(--text-primary); font-weight: 600; box-shadow: inset 0 -2px 0 var(--series-1); }
+#drawer .body { overflow: auto; padding: 8px 12px 12px; }
+h1 { font-size: 15px; margin: 0 0 4px; }
+h3 { font-size: 13px; margin: 10px 0 4px; }
+.row { margin: 5px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.row > b { min-width: 34px; }
+select, input[type=number] { font: inherit; color: inherit; background: var(--surface-1); border: 1px solid var(--axis); border-radius: 4px; padding: 2px 4px; max-width: 150px; }
+button.act { font: inherit; border: 1px solid var(--axis); background: var(--page); color: inherit; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+.hint, .muted { color: var(--text-secondary); }
+.small { font-size: 12px; }
+.lg i { display: inline-block; width: 22px; height: 5px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
+.lg span { display: inline-block; margin-right: 8px; }
+table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 3px 7px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
+th { color: var(--text-secondary); font-weight: 600; }
+th:first-child, td:first-child { text-align: left; }
+td.st { text-align: left; }
+.badge { display: inline-block; min-width: 14px; text-align: center; font-weight: 700; }
+.res { background: var(--page); border-radius: 6px; padding: 6px 8px; margin-top: 6px; }
+.res .ab { color: var(--text-primary); }
+.sw { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
+#drop { border: 1px dashed var(--axis); border-radius: 6px; padding: 10px; text-align: center; color: var(--text-secondary); }
+#drop.over { border-color: var(--series-1); color: var(--text-primary); }
+.chart { position: relative; display: inline-block; margin-right: 16px; vertical-align: top; }
+.chart svg text { fill: var(--muted); font-size: 11px; }
+.chart .tt { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+             padding: 4px 6px; font-size: 12px; box-shadow: 0 2px 6px rgba(0,0,0,.15); display: none; white-space: nowrap; }
+.leaflet-container { font: inherit; }
+.leaflet-popup-content { font-size: 12px; }
+.leaflet-tooltip.place { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); font-size: 11px; padding: 1px 4px; box-shadow: none; }
+.leaflet-tooltip.place::before { display: none; }
+@media (max-width: 760px) {
+  #panel { width: calc(100% - 40px); max-height: 42%; top: 6px; right: 6px; }
+  #drawer { width: calc(100% - 20px); left: 6px; bottom: 6px; max-height: 42%; }
+}
+</style>
+</head>
+<body>
+<div id="m" aria-label="粤海校区通行效率地图"></div>
+<div id="panel" class="box">
+  <h1>粤海校区通行效率 <button class="act small" id="ptoggle" title="收起/展开面板" style="float:right">▴</button></h1>
+  <div id="pbody">
+  <div class="row"><b>方式</b><label><input type="radio" name="md" value="walk">步行</label><label><input type="radio" name="md" value="bike" checked>骑行</label></div>
+  <div class="row"><b>时段</b><label><input type="radio" name="per" value="off" checked>平峰</label><label><input type="radio" name="per" value="peak">上下课高峰</label></div>
+  <div class="row"><b>图层</b><select id="layer">
+    <option value="eff">通行效率（相对平路）</option><option value="slope">坡度方向差异</option><option value="support">轨迹支持</option><option value="none">仅路网</option>
+  </select></div>
+  <div class="row small"><label><input type="checkbox" id="prior">包括无轨迹路段（仅先验估计）</label></div>
+  <div class="lg small" id="lg"></div>
+  <div class="row"><b>工具</b>
+    <label><input type="radio" name="tool" value="view">查看路段</label>
+    <label><input type="radio" name="tool" value="route" checked>双向路线</label>
+    <label><input type="radio" name="tool" value="iso">可达圈</label></div>
+  <div id="tool-route">
+    <div class="row"><select id="ra"></select>⇄<select id="rb"></select><button class="act" id="rswap" title="交换起终点">↔</button></div>
+    <div class="hint small">在地图上点两下设置 A、B，或从列表选地点。</div>
+    <div id="rres" class="res small" role="status">选择起终点后显示 A→B 与 B→A。</div>
+  </div>
+  <div id="tool-iso" hidden>
+    <div class="row"><select id="io"></select>
+      <label><input type="radio" name="idir" value="out" checked>出发圈</label><label><input type="radio" name="idir" value="in">到达圈</label></div>
+    <div class="hint small">出发圈：从这里出发 N 分钟能到；到达圈：从哪里出发 N 分钟能到这里（坡度使两者不同）。地图上点任意位置也可。</div>
+    <div class="lg small" id="ilg"></div>
+    <div id="ires" class="res small" role="status"></div>
+  </div>
+  </div>
+  <p id="map-status" class="hint small" role="status">正在载入…</p>
+  <noscript>请在启用 JavaScript 的浏览器中打开地图。</noscript>
+</div>
+<div id="drawer" class="box">
+  <div class="tabs" role="tablist">
+    <button data-tab="teach" class="on">教学区通勤</button><button data-tab="dorm">宿舍→教学楼</button><button data-tab="od">地点 OD</button>
+    <button data-tab="iso">可达圈汇总</button><button data-tab="model">模型与验证</button><button data-tab="kml">KML 轨迹</button>
+    <button data-tab="about">方法</button><button id="dtoggle" title="收起/展开" style="margin-left:auto">▾</button>
+  </div>
+  <div class="body" id="dbody"></div>
+</div>
+<script>/*__LEAFLET_JS__*/</script>
+<script id="map-data" type="application/json">__MAP_DATA__</script>
+<script>
+'use strict';
+(function () {
+const raw = document.getElementById('map-data').textContent;
+const status = document.getElementById('map-status');
+if (raw.trim().startsWith('__')) { status.innerHTML = '这是地图模板，请打开 analyze.py 生成的 out/map.html 或 docs/index.html。'; return; }
+const D = JSON.parse(raw);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = v => { const s = document.createElement('span'); s.textContent = v == null ? '' : String(v); return s.innerHTML; };
+const fmt = (v, n = 1) => v == null || !isFinite(v) ? '—' : Number(v).toFixed(n);
+const mins = s => s == null ? '—' : (s / 60).toFixed(1) + ' 分';
+const MODE_ZH = {walk: '步行', bike: '骑行'}, PER_ZH = {off: '平峰', peak: '高峰'};
+
+// ---------- 投影（与 Python tracks.xy 相同） ----------
+const LAT0 = D.meta.lat0, LON0 = D.meta.lon0, KX = 111320 * Math.cos(LAT0 * Math.PI / 180), KY = 110574;
+const toXY = (lon, lat) => [(lon - LON0) * KX, (lat - LAT0) * KY];
+
+// ---------- 路段几何 ----------
+const EDGES = D.edges.map((r, id) => {
+  const [a, b, len, flat, name, hw, rise, ascent, descent, hk] = r;
+  const ll = [], xs = [], ys = [];
+  for (let i = 0; i < flat.length; i += 2) { ll.push([flat[i + 1], flat[i]]); const p = toXY(flat[i], flat[i + 1]); xs.push(p[0]); ys.push(p[1]); }
+  const cs = [0]; for (let i = 1; i < xs.length; i++) cs.push(cs[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]));
+  const sc = len / Math.max(cs[cs.length - 1], 1e-9);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  xs.forEach((x, i) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, ys[i]); y1 = Math.max(y1, ys[i]); });
+  return {id, a, b, len, ll, xs, ys, cs: cs.map(c => c * sc), name, hw, rise, ascent, descent, hk: !!hk, box: [x0, x1, y0, y1]};
+});
+function project(e, px, py) {   // 与 network.project 相同
+  let best = [0, Infinity];
+  for (let i = 0; i < e.xs.length - 1; i++) {
+    const dx = e.xs[i + 1] - e.xs[i], dy = e.ys[i + 1] - e.ys[i], L2 = dx * dx + dy * dy;
+    const u = L2 === 0 ? 0 : Math.min(1, Math.max(0, ((px - e.xs[i]) * dx + (py - e.ys[i]) * dy) / L2));
+    const d = Math.hypot(px - e.xs[i] - u * dx, py - e.ys[i] - u * dy);
+    if (d < best[1]) best = [e.cs[i] + u * (e.cs[i + 1] - e.cs[i]), d];
+  }
+  return best;
+}
+function sub(e, s0, s1) {   // 路段上 s0→s1 的子线（LatLng）
+  const lo = Math.min(s0, s1), hi = Math.max(s0, s1), pt = s => {
+    let i = 1; while (i < e.cs.length - 1 && e.cs[i] < s) i++;
+    const f = (s - e.cs[i - 1]) / Math.max(e.cs[i] - e.cs[i - 1], 1e-9);
+    return [e.ll[i - 1][0] + f * (e.ll[i][0] - e.ll[i - 1][0]), e.ll[i - 1][1] + f * (e.ll[i][1] - e.ll[i - 1][1])];
+  };
+  const out = [pt(lo)]; e.cs.forEach((c, i) => { if (c > lo && c < hi) out.push(e.ll[i]); }); out.push(pt(hi));
+  return s0 <= s1 ? out : out.reverse();
+}
+
+// ---------- 有向图与规划（与 routing.Planner 相同） ----------
+const GRAPH = {};
+function graph(key) {
+  if (GRAPH[key]) return GRAPH[key];
+  const C = D.cost[key], out = new Map(), inc = new Map();
+  const push = (m, k, v) => { if (!m.has(k)) m.set(k, []); m.get(k).push(v); };
+  EDGES.forEach(e => {
+    if (C[e.id][0] != null) { push(out, e.a, [e.b, C[e.id][0], e.id, 0]); push(inc, e.b, [e.a, C[e.id][0], e.id, 0]); }
+    if (C[e.id][1] != null) { push(out, e.b, [e.a, C[e.id][1], e.id, 1]); push(inc, e.a, [e.b, C[e.id][1], e.id, 1]); }
+  });
+  return GRAPH[key] = {C, out, inc};
+}
+const WALK = D.meta.walk_speed, SNAP_R = D.meta.snap.r, SNAP_K = D.meta.snap.k;
+function snap(lon, lat, key) {
+  const C = D.cost[key], [px, py] = toXY(lon, lat), c = [];
+  for (const e of EDGES) {
+    if (C[e.id][0] == null && C[e.id][1] == null) continue;
+    if (px < e.box[0] - SNAP_R || px > e.box[1] + SNAP_R || py < e.box[2] - SNAP_R || py > e.box[3] + SNAP_R) continue;
+    const [s, d] = project(e, px, py); if (d <= SNAP_R) c.push([e.id, s, d]);
+  }
+  c.sort((p, q) => p[2] - q[2]); const near = c.slice(0, SNAP_K);   // 与 routing.Planner.snap 相同
+  return near.filter(p => p[2] <= near[0][2] + D.meta.snap.slack).map(([e, s, d]) => [e, s, d * D.meta.snap.detour]);
+}
+class Heap { constructor() { this.a = []; }
+  push(x) { const a = this.a; a.push(x); let i = a.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (a[p][0] <= a[i][0]) break; [a[p], a[i]] = [a[i], a[p]]; i = p; } }
+  pop() { const a = this.a, top = a[0], last = a.pop(); if (a.length) { a[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i;
+    if (l < a.length && a[l][0] < a[m][0]) m = l; if (r < a.length && a[r][0] < a[m][0]) m = r; if (m === i) break; [a[m], a[i]] = [a[i], a[m]]; i = m; } } return top; }
+  get size() { return this.a.length; } }
+function tree(snaps, key, reverse = false, limit = Infinity) {
+  const G = graph(key), adj = reverse ? G.inc : G.out, dist = new Map(), h = new Heap(), done = new Set();
+  for (const [eid, s, acc] of snaps) {
+    const e = EDGES[eid], a0 = acc / WALK;
+    // 正向：从 s 走到 a 是反向(1)，到 b 是正向(0)；求“到达此点”时相反
+    for (const [node, part, d] of [[e.a, s, reverse ? 0 : 1], [e.b, e.len - s, reverse ? 1 : 0]]) {
+      const c = G.C[eid][d]; if (c == null) continue;
+      const v = a0 + c * part / e.len;
+      if (!dist.has(node) || v < dist.get(node)[0]) { dist.set(node, [v, null, [eid, s, d, acc]]); h.push([v, node]); }
+    }
+  }
+  while (h.size) {
+    const [c, u] = h.pop(); if (done.has(u) || c > limit) continue; done.add(u);
+    for (const [v, w, eid, d] of adj.get(u) || []) { const nc = c + w; if (!dist.has(v) || nc < dist.get(v)[0]) { dist.set(v, [nc, u, [eid, d]]); h.push([nc, v]); } }
+  }
+  return dist;
+}
+function route(src, dst, key) {
+  const G = graph(key), S = snap(src[0], src[1], key), T = snap(dst[0], dst[1], key);
+  if (!S.length || !T.length) return null;
+  const dist = tree(S, key); let best = null;
+  for (const [eid, s, acc] of T) {
+    const e = EDGES[eid];
+    for (const [node, part, d] of [[e.a, s, 0], [e.b, e.len - s, 1]]) {
+      const c = G.C[eid][d]; if (c == null || !dist.has(node)) continue;
+      const v = dist.get(node)[0] + c * part / e.len + acc / WALK;
+      if (!best || v < best.t) best = {t: v, node, end: [eid, s, d, acc]};
+    }
+  }
+  for (const [e1, s1, a1] of S) for (const [e2, s2, a2] of T) {
+    const d = s2 >= s1 ? 0 : 1, c = G.C[e1][d];
+    if (e1 === e2 && c != null) { const v = (a1 + a2) / WALK + c * Math.abs(s2 - s1) / EDGES[e1].len;
+      if (!best || v < best.t) best = {t: v, direct: [e1, s1, s2, d], acc: a1 + a2}; }
+  }
+  if (!best) return null;
+  let arcs = [], geo = [], acc = 0;
+  if (best.direct) { const [e, s1, s2, d] = best.direct; arcs = [[e, d, Math.abs(s2 - s1)]]; geo = sub(EDGES[e], s1, s2); acc = best.acc; }
+  else {
+    const [eid, s, d, a2] = best.end, E = EDGES[eid];
+    arcs.push([eid, d, d === 0 ? s : E.len - s]); geo = sub(E, d === 0 ? 0 : E.len, s); acc = a2;
+    let u = best.node;
+    for (;;) {
+      const [, prev, via] = dist.get(u);
+      if (prev === null) { const [e0, s0, d0, a0] = via, E0 = EDGES[e0]; arcs.push([e0, d0, d0 === 0 ? E0.len - s0 : s0]);
+        geo = sub(E0, s0, d0 === 0 ? E0.len : 0).concat(geo); acc += a0; break; }
+      const [e1, d1] = via, E1 = EDGES[e1]; arcs.push([e1, d1, E1.len]); geo = (d1 === 0 ? E1.ll : E1.ll.slice().reverse()).concat(geo); u = prev;
+    }
+  }
+  let up = 0, down = 0, net = 0;
+  arcs.forEach(([e, d, p]) => { const E = EDGES[e], f = p / E.len; net += p; up += (d === 0 ? E.ascent : E.descent) * f; down += (d === 0 ? E.descent : E.ascent) * f; });
+  const sup = arcs.reduce((s, [e, d, p]) => s + (D.support[key.split('_')[0]][e][d] > 0 ? p : 0), 0);
+  return {t: best.t, dist: net + acc, net, up, down, geo, arcs, cover: net ? sup / net : 0};
+}
+
+// ---------- 地图 ----------
+const m = L.map('m', {maxZoom: 19, zoomSnap: 0.5}).setView([22.5352, 113.9325], 16);
+m.attributionControl.addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · 地形：DirMap 共享轨迹高程');
+L.control.scale({imperial: false}).addTo(m);
+m.createPane('base').style.zIndex = 190; m.createPane('net').style.zIndex = 300; m.createPane('over').style.zIndex = 420; m.createPane('top').style.zIndex = 460;
+const rBase = L.canvas({pane: 'base'}), rNet = L.canvas({pane: 'net', tolerance: 5}), rOver = L.canvas({pane: 'over'}), rTop = L.canvas({pane: 'top'});
+L.geoJSON(D.basemap, {pane: 'base', renderer: rBase, interactive: false, style: f => {
+  const k = f.properties.kind;
+  if (k === 'water') return {color: css('--water'), weight: 1, fillColor: css('--water'), fillOpacity: 1};
+  if (k === 'building') return {color: css('--bld-line'), weight: 1, fillColor: css('--bld'), fillOpacity: 1};
+  if (k === 'green') return {color: css('--green'), weight: 1, fillColor: css('--green'), fillOpacity: 1};
+  return {color: css('--road-major'), weight: 5, opacity: 1};
+}}).addTo(m);
+const netLayer = L.layerGroup().addTo(m);
+EDGES.forEach(e => L.polyline(e.ll, {renderer: rBase, pane: 'base', color: css('--road'), weight: /^(secondary|tertiary)/.test(e.hw) ? 4 : 2, interactive: false}).addTo(netLayer));
+const placeLayer = L.layerGroup().addTo(m);
+for (const [name, p] of Object.entries(D.places)) {
+  L.circleMarker([p.lat, p.lon], {renderer: rTop, pane: 'top', radius: 4, color: css('--surface-1'), weight: 2, fillColor: css('--text-secondary'), fillOpacity: 1})
+    .addTo(placeLayer).bindTooltip(esc(name), {permanent: true, direction: 'right', className: 'place', offset: [4, 0]});
+}
+
+// 颜色：效率 = 发散（红慢 – 灰 – 蓝快）；支持 / 可达圈 = 蓝色序数
+const DIV = ['#b8312f', '#e8807e', '#a9a8a1', '#6da7ec', '#184f95'];
+const effBin = r => r < 0.8 ? 0 : r < 0.93 ? 1 : r <= 1.07 ? 2 : r <= 1.25 ? 3 : 4;
+const EFF_LBL = ['<0.8 慢', '0.8–0.93', '0.93–1.07', '1.07–1.25', '>1.25 快'];
+const SEQ = ['#86b6ef', '#3987e5', '#184f95'];
+const BEAR = ['东', '东北', '北', '西北', '西', '西南', '南', '东南'];
+const bearing = (e, d) => { const i0 = d ? e.xs.length - 1 : 0, i1 = d ? 0 : e.xs.length - 1;
+  const ang = Math.atan2(e.ys[i1] - e.ys[i0], e.xs[i1] - e.xs[i0]); return '向' + BEAR[((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8]; };
+
+const st = {mode: 'bike', per: 'off', layer: 'eff', tool: 'route', A: null, B: null, iso: null, idir: 'out', prior: false};
+const key = () => `${st.mode}_${st.per}`;
+const over = L.layerGroup().addTo(m), routeLayer = L.layerGroup().addTo(m), isoLayer = L.layerGroup().addTo(m), kmlLayer = L.layerGroup().addTo(m);
+
+function edgePopup(e) {
+  const md = st.mode, k = key(), C = D.cost[k][e.id], ob = D.observed[md];
+  const rows = [0, 1].map(d => {
+    if (C[d] == null) return `<tr><td>${bearing(e, d)}</td><td colspan="4">${md === 'bike' ? '单行，不可逆行' : '不可通行'}</td></tr>`;
+    const v = e.len / C[d], o = ob[`${e.id}${d ? '-' : '+'}`], rise = d ? -e.rise : e.rise;
+    return `<tr><td>${bearing(e, d)}</td><td>${fmt(v, 2)} m/s</td><td>${fmt(C[d], 0)} s</td><td>${fmt(100 * rise / e.len, 1)}%</td>` +
+           `<td>${D.support[md][e.id][d]} 条${o ? `，实测 ${fmt(o[0] / o[1], 2)} m/s` : ''}</td></tr>`;
+  }).join('');
+  return `<b>${esc(e.name || e.hw)}</b> <span class="muted">${esc(e.hw)} · ${fmt(e.len, 0)} m${e.hk ? '' : ' · 无地形'}</span>
+    <table class="small"><tr><th>方向</th><th>${MODE_ZH[md]}速度</th><th>耗时</th><th>坡度</th><th>轨迹支持</th></tr>${rows}</table>
+    <div class="muted small">${PER_ZH[st.per]}；速度 = 通勤基准 × 坡度 × 道路类别 × 路段/方向效应${st.per === 'peak' ? ' × 高峰' : ''}。</div>`;
+}
+function drawOver() {
+  over.clearLayers();
+  const md = st.mode, E = D.eff[md], S = D.support[md], k = key(), C = D.cost[k];
+  const lg = document.getElementById('lg');
+  if (st.layer === 'none') { lg.innerHTML = ''; return; }
+  for (const e of EDGES) {
+    if (C[e.id][0] == null && C[e.id][1] == null) continue;
+    const sup = S[e.id][0] + S[e.id][1];
+    let color, w = 3, show = sup > 0 || (st.prior && e.hk);
+    if (!show) continue;
+    if (st.layer === 'eff') {
+      const vals = E[e.id].filter((_, d) => C[e.id][d] != null); const g = Math.exp(vals.reduce((s, v) => s + Math.log(v), 0) / vals.length);
+      color = DIV[effBin(g)]; w = sup ? 3 + Math.min(sup, 6) * 0.6 : 1.5;
+    } else if (st.layer === 'slope') {
+      if (C[e.id][0] == null || C[e.id][1] == null) continue;
+      const r = C[e.id][0] / C[e.id][1];  // 正向/反向耗时
+      const a = Math.abs(Math.log(r)); if (a < 0.03) { color = DIV[2]; w = 2; } else { color = a < 0.1 ? DIV[1] : DIV[0]; w = a < 0.1 ? 3 : 4.5;
+        // 箭头指向耗时更长（上坡）的方向
+        if (e.len >= 25) arrow(e, e.len / 2, r > 1 ? 0 : 1, color); }
+    } else {
+      if (!sup) continue; color = SEQ[sup >= 4 ? 2 : sup >= 2 ? 1 : 0]; w = 3 + Math.min(sup, 6) * 0.6;
+    }
+    L.polyline(e.ll, {renderer: rNet, pane: 'net', color, weight: w, opacity: 0.95}).addTo(over)
+      .on('click', ev => { if (st.tool === 'view') { L.DomEvent.stopPropagation(ev); L.popup({maxWidth: 380}).setLatLng(ev.latlng).setContent(edgePopup(e)).openOn(m); } });
+  }
+  if (st.layer === 'eff') lg.innerHTML = `相对效率（${MODE_ZH[md]}，同一人平路 = 1）<br>` + EFF_LBL.map((t, i) => `<span><i style="background:${DIV[i]}"></i>${t}</span>`).join('') +
+    `<br><span class="muted">线宽 = 轨迹支持${st.prior ? '；细线 = 无轨迹，仅按坡度+道路类别先验' : ''}。</span>`;
+  else if (st.layer === 'slope') lg.innerHTML = `两个方向耗时差（${MODE_ZH[md]}）：<span><i style="background:${DIV[2]}"></i>&lt;3%</span><span><i style="background:${DIV[1]}"></i>3–10%</span><span><i style="background:${DIV[0]}"></i>&gt;10%</span><br><span class="muted">箭头指向较慢（上坡）方向。</span>`;
+  else lg.innerHTML = '经过该路段的独立轨迹数（同方式族）：' + ['1', '2–3', '≥4'].map((t, i) => `<span><i style="background:${SEQ[i]}"></i>${t}</span>`).join('');
+}
+const ptXY = (e, s) => { s = Math.max(0, Math.min(e.len, s)); let i = 1; while (i < e.cs.length - 1 && e.cs[i] < s) i++;
+  const f = (s - e.cs[i - 1]) / Math.max(e.cs[i] - e.cs[i - 1], 1e-9); return [e.xs[i - 1] + f * (e.xs[i] - e.xs[i - 1]), e.ys[i - 1] + f * (e.ys[i] - e.ys[i - 1])]; };
+const toLL = (x, y) => [y / KY + LAT0, x / KX + LON0];
+function arrow(e, s, d, color) {
+  const [x0, y0] = ptXY(e, d ? s + 3 : s - 3), [x1, y1] = ptXY(e, d ? s - 3 : s + 3), ang = Math.atan2(y1 - y0, x1 - x0), L6 = 7;
+  const wing = a => toLL(x1 - L6 * Math.cos(ang + a), y1 - L6 * Math.sin(ang + a));
+  L.polyline([wing(0.55), toLL(x1, y1), wing(-0.55)], {renderer: rOver, pane: 'over', color, weight: 2.5, interactive: false}).addTo(over);
+}
+
+// ---------- 双向路线 ----------
+const PL = Object.entries(D.places);
+['ra', 'rb', 'io'].forEach(id => { const s = document.getElementById(id);
+  s.innerHTML = '<option value="">（地图点选）</option>' + PL.map(([n, p]) => `<option>${esc(n)}</option>`).join(''); });
+document.getElementById('ra').value = '斋区'; document.getElementById('rb').value = '汇文楼'; document.getElementById('io').value = '斋区';
+const placeLL = n => n && D.places[n] ? [D.places[n].lon, D.places[n].lat] : null;
+function drawRoute() {
+  routeLayer.clearLayers(); const box = document.getElementById('rres');
+  const A = st.A, B = st.B;
+  [[A, 'A'], [B, 'B']].forEach(([p, t]) => p && L.marker([p[1], p[0]], {icon: L.divIcon({className: '', html: `<div style="background:${css('--text-primary')};color:${css('--surface-1')};border-radius:9px;width:18px;height:18px;text-align:center;font-weight:700;line-height:18px">${t}</div>`, iconSize: [18, 18]})}).addTo(routeLayer));
+  if (!A || !B) { box.textContent = A ? '再点一下设置 B。' : '在地图上点两下设置 A、B，或从列表选地点。'; return; }
+  const k = key(), ab = route(A, B, k), ba = route(B, A, k);
+  if (!ab || !ba) { box.textContent = '120 m 内没有可通行道路。'; return; }
+  L.polyline(ba.geo, {renderer: rTop, pane: 'top', color: css('--series-2'), weight: 4, opacity: 0.9}).addTo(routeLayer);
+  L.polyline(ab.geo, {renderer: rTop, pane: 'top', color: css('--series-1'), weight: 4, opacity: 0.9, dashArray: null}).addTo(routeLayer);
+  const line = (r, t, c) => `<div><span class="sw" style="background:${c}"></span><b class="ab">${t}</b> ${mins(r.t)}，${fmt(r.dist, 0)} m，↑${fmt(r.up, 1)} m ↓${fmt(r.down, 1)} m，数据覆盖 ${fmt(100 * r.cover, 0)}%</div>`;
+  const diff = ab.t - ba.t;
+  box.innerHTML = `${MODE_ZH[st.mode]} · ${PER_ZH[st.per]}` + line(ab, 'A→B', css('--series-1')) + line(ba, 'B→A', css('--series-2')) +
+    `<div>${Math.abs(diff) < 3 ? '两个方向基本相同' : `A→B 比 B→A ${diff > 0 ? '慢' : '快'} ${fmt(Math.abs(diff), 0)} s（${fmt(100 * Math.abs(diff) / Math.min(ab.t, ba.t), 0)}%）`}` +
+    `${ab.net && Math.abs(ab.net - ba.net) > 10 ? '，两个方向选的路线不同' : ''}</div>` +
+    `<div class="muted">路上时间，不含出入楼/取停车；门到路按步行 ${fmt(WALK, 2)} m/s。</div>`;
+}
+function setPlaces() { st.A = placeLL(document.getElementById('ra').value) || st.A; st.B = placeLL(document.getElementById('rb').value) || st.B; drawRoute(); }
+document.getElementById('ra').onchange = e => { st.A = placeLL(e.target.value); drawRoute(); };
+document.getElementById('rb').onchange = e => { st.B = placeLL(e.target.value); drawRoute(); };
+document.getElementById('rswap').onclick = () => { [st.A, st.B] = [st.B, st.A]; const a = document.getElementById('ra'), b = document.getElementById('rb'); [a.value, b.value] = [b.value, a.value]; drawRoute(); };
+
+// ---------- 可达圈 ----------
+const ISOS = {walk: [300, 600, 900], bike: [180, 300, 600]};
+let ISO = ISOS.bike;
+function drawIso() {
+  isoLayer.clearLayers(); const box = document.getElementById('ires'); ISO = ISOS[st.mode];
+  document.getElementById('ilg').innerHTML = ISO.map((t, i) => `<span><i style="background:${SEQ[2 - i]}"></i>≤${t / 60} 分钟</span>`).join('');
+  if (!st.iso) { box.textContent = '选择地点或在地图上点一下。'; return; }
+  const k = key(), C = D.cost[k], rev = st.idir === 'in', S = snap(st.iso[0], st.iso[1], k);
+  if (!S.length) { box.textContent = '120 m 内没有可通行道路。'; return; }
+  const dist = tree(S, k, rev, ISO[2] + 60);
+  L.circleMarker([st.iso[1], st.iso[0]], {renderer: rTop, pane: 'top', radius: 7, color: css('--surface-1'), weight: 2, fillColor: css('--text-primary'), fillOpacity: 1}).addTo(isoLayer);
+  const km = [0, 0, 0];
+  for (let bi = ISO.length - 1; bi >= 0; bi--) {
+    const lim = ISO[bi], color = SEQ[2 - bi];
+    for (const e of EDGES) {
+      // 出发圈：从 a 沿正向推进、从 b 沿反向；到达圈：走向 a 用反向、走向 b 用正向
+      const fa = dist.get(e.a), fb = dist.get(e.b), ca = C[e.id][rev ? 1 : 0], cb = C[e.id][rev ? 0 : 1];
+      let ra = 0, rb = 0;
+      if (fa && ca != null && fa[0] < lim) ra = Math.min(e.len, (lim - fa[0]) / (ca / e.len));
+      if (fb && cb != null && fb[0] < lim) rb = Math.min(e.len, (lim - fb[0]) / (cb / e.len));
+      if (ra + rb <= 0) continue;
+      km[bi] += Math.min(e.len, ra + rb) / 1000;
+      const segs = ra + rb >= e.len ? [[0, e.len]] : [ra > 0 ? [0, ra] : null, rb > 0 ? [e.len - rb, e.len] : null].filter(Boolean);
+      segs.forEach(([s0, s1]) => L.polyline(sub(e, s0, s1), {renderer: rOver, pane: 'over', color, weight: 5, opacity: 0.9, interactive: false}).addTo(isoLayer));
+    }
+  }
+  const reach = PL.map(([n, p]) => {
+    if (Math.hypot(...toXY(p.lon, p.lat).map((v, i) => v - toXY(...st.iso)[i])) < 30) return null;
+    const r = rev ? route([p.lon, p.lat], st.iso, k) : route(st.iso, [p.lon, p.lat], k); return r && [n, r.t];
+  }).filter(Boolean).sort((a, b) => a[1] - b[1]);
+  box.innerHTML = `${MODE_ZH[st.mode]} · ${PER_ZH[st.per]} · ${rev ? '到达圈（多久能到这里）' : '出发圈（从这里多久能到）'}<br>` +
+    ISO.map((t, i) => `<span class="sw" style="background:${SEQ[2 - i]}"></span><b>${i ? ISO[i - 1] / 60 + '–' : '≤'}${t / 60} 分钟</b>（累计路网 ${fmt(km[i], 1)} km）：` +
+      (reach.filter(r => r[1] <= t && (i === 0 || r[1] > ISO[i - 1])).map(r => `${esc(r[0])} ${fmt(r[1] / 60, 1)}′`).join('、') || '—')).join('<br>');
+}
+document.getElementById('io').onchange = e => { st.iso = placeLL(e.target.value); drawIso(); };
+document.querySelectorAll('[name=idir]').forEach(i => i.onchange = () => { st.idir = i.value; drawIso(); });
+
+m.on('click', ev => {
+  const p = [ev.latlng.lng, ev.latlng.lat];
+  if (st.tool === 'route') {
+    if (!st.A || (st.A && st.B)) { st.A = p; st.B = null; document.getElementById('ra').value = ''; document.getElementById('rb').value = ''; }
+    else { st.B = p; document.getElementById('rb').value = ''; }
+    drawRoute();
+  } else if (st.tool === 'iso') { st.iso = p; document.getElementById('io').value = ''; drawIso(); }
+});
+function setTool() {
+  document.getElementById('tool-route').hidden = st.tool !== 'route'; document.getElementById('tool-iso').hidden = st.tool !== 'iso';
+  routeLayer.clearLayers(); isoLayer.clearLayers();
+  if (st.tool === 'iso') over.remove(); else over.addTo(m);
+  if (st.tool === 'route') drawRoute(); if (st.tool === 'iso') { st.iso = st.iso || placeLL(document.getElementById('io').value); drawIso(); }
+  m.getContainer().style.cursor = st.tool === 'view' ? '' : 'crosshair';
+}
+const redraw = () => { drawOver(); setTool(); renderTab(); };
+document.querySelectorAll('[name=md]').forEach(i => i.onchange = () => { st.mode = i.value; redraw(); });
+document.querySelectorAll('[name=per]').forEach(i => i.onchange = () => { st.per = i.value; redraw(); });
+document.querySelectorAll('[name=tool]').forEach(i => i.onchange = () => { st.tool = i.value; setTool(); });
+document.getElementById('layer').onchange = e => { st.layer = e.target.value; drawOver(); };
+document.getElementById('prior').onchange = e => { st.prior = e.target.checked; drawOver(); };
+document.getElementById('ptoggle').onclick = () => { const b = document.getElementById('pbody'); b.hidden = !b.hidden; document.getElementById('ptoggle').textContent = b.hidden ? '▾' : '▴'; };
+if (window.matchMedia('(max-width: 760px)').matches) { document.getElementById('drawer').classList.add('collapsed'); document.getElementById('dtoggle').textContent = '▴'; }
+
+// ---------- 分析抽屉 ----------
+const TABS = {};
+let tab = 'teach';
+document.querySelectorAll('#drawer .tabs button[data-tab]').forEach(b => b.onclick = () => {
+  tab = b.dataset.tab; document.querySelectorAll('#drawer .tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.getElementById('drawer').classList.remove('collapsed'); renderTab(); });
+document.getElementById('dtoggle').onclick = () => { const d = document.getElementById('drawer'); d.classList.toggle('collapsed');
+  document.getElementById('dtoggle').textContent = d.classList.contains('collapsed') ? '▴' : '▾'; };
+function renderTab() { document.getElementById('dbody').innerHTML = TABS[tab](); (TABS[tab].after || (() => {}))(); }
+const OD = new Map(D.od.map(r => [`${r.origin}|${r.dest}|${r.mode}|${r.period}`, r]));
+const od = (a, b, md = st.mode, per = st.per) => OD.get(`${a}|${b}|${md}|${per}`);
+const groupNames = g => PL.filter(([, p]) => p.group === g).map(([n]) => n);
+const STATUS = [[5, '✓', '--good', '节间 5 分钟内'], [10, '✓', '--good', '10 分钟内'], [20, '!', '--warning', '仅大课间 20 分钟'], [Infinity, '✗', '--critical', '课间赶不到']];
+const ov = {walk: 1, bike: 2};
+function statusOf(t) { return STATUS.find(s => t <= s[0]); }
+
+TABS.teach = () => {
+  const T = groupNames('教学区'), md = st.mode, o = ov[md];
+  const cell = (a, b) => { if (a === b) return '<td class="muted">—</td>';
+    const r = od(a, b), rr = od(b, a); if (!r) return '<td>—</td>';
+    const door = r.time_min + o, s = statusOf(door), asym = rr ? r.time_min - rr.time_min : 0;
+    return `<td title="路上 ${r.time_min} 分 + 出入楼${md === 'bike' ? '/取停车' : ''} ${o} 分；${r.dist_m} m，↑${r.ascent_m} m">` +
+      `<span class="badge" style="color:${css(s[2])}">${s[1]}</span> ${fmt(door, 1)}${Math.abs(asym) >= 0.3 ? `<sup class="muted">${asym > 0 ? '+' : ''}${fmt(asym, 1)}</sup>` : ''}</td>`; };
+  const pairs = [];
+  T.forEach((a, i) => T.slice(i + 1).forEach(b => { const x = od(a, b), y = od(b, a); if (x && y) pairs.push([a, b, x, y]); }));
+  pairs.sort((p, q) => Math.abs(q[2].time_min - q[3].time_min) - Math.abs(p[2].time_min - p[3].time_min));
+  return `<div class="small muted">${MODE_ZH[md]} · ${PER_ZH[st.per]}：门到门 = 路上时间 + ${o} 分钟（${md === 'bike' ? '出入楼 + 取停车' : '出入楼'}）。行 = 出发，列 = 到达；上标 = 与反方向的差（分钟，正 = 更慢）。
+    ${STATUS.map(s => `<span class="badge" style="color:${css(s[2])}">${s[1]}</span>${s[3]}`).join('　')}</div>
+    <table><tr><th>出发 \\ 到达</th>${T.map(t => `<th>${esc(t)}</th>`).join('')}</tr>${T.map(a => `<tr><th>${esc(a)}</th>${T.map(b => cell(a, b)).join('')}</tr>`).join('')}</table>
+    <h3>方向差最大的教学区组合（${MODE_ZH[md]}）</h3>
+    <table><tr><th>组合</th><th>距离</th><th>去程</th><th>回程</th><th>差</th><th>去程爬升</th><th>回程爬升</th><th>数据覆盖</th></tr>
+    ${pairs.slice(0, 6).map(([a, b, x, y]) => `<tr><td>${esc(a)} → ${esc(b)}</td><td>${x.dist_m} m</td><td>${fmt(x.time_min, 1)} 分</td><td>${fmt(y.time_min, 1)} 分</td>
+      <td>${fmt(100 * (x.time_min / y.time_min - 1), 0)}%</td><td>${x.ascent_m} m</td><td>${y.ascent_m} m</td><td>${fmt(100 * Math.min(x.data_coverage, y.data_coverage), 0)}%</td></tr>`).join('')}</table>
+    <div class="small muted">点击“双向路线”并选择两栋楼可在地图上查看两个方向的路线。</div>`;
+};
+TABS.dorm = () => {
+  const Dm = groupNames('宿舍区'), T = groupNames('教学区');
+  const rows = Dm.map(a => `<tr><th>${esc(a)}</th>${T.map(b => { const w = od(a, b, 'walk'), bk = od(a, b, 'bike'), wb = od(b, a, 'walk'), bb = od(b, a, 'bike');
+    return `<td>${w ? fmt(w.time_min, 1) : '—'} / ${bk ? fmt(bk.time_min, 1) : '—'}<br><span class="muted small">回 ${wb ? fmt(wb.time_min, 1) : '—'} / ${bb ? fmt(bb.time_min, 1) : '—'} · ${w ? w.dist_m : '—'} m</span></td>`; }).join('')}</tr>`).join('');
+  const ob = D.observed_trips.map(o => `<tr><td>${esc(o.file)}</td><td>${MODE_ZH[o.mode]}</td><td>${esc(o.origin)}→${esc(o.dest)}</td><td>${PER_ZH[o.period]}</td><td>${o.dist_m} m</td><td>${fmt(o.time_min, 1)} 分</td><td>${o.model_min == null ? '—' : fmt(o.model_min, 1) + ' 分'}</td></tr>`).join('');
+  return `<div class="small muted">${PER_ZH[st.per]}，步行 / 骑行（分钟，路上时间）；第二行为回程（教学楼→宿舍）与距离。</div>
+    <table><tr><th>宿舍区</th>${T.map(t => `<th>${esc(t)}</th>`).join('')}</tr>${rows}</table>
+    <h3>实测直达行程（起终点距地点中心 ≤150 m）</h3>
+    <table><tr><th>记录</th><th>方式</th><th>行程</th><th>时段</th><th>轨迹长</th><th>实测（含停车/等候）</th><th>模型路上时间</th></tr>${ob}</table>`;
+};
+TABS.od = () => {
+  const o = TABS.od.origin || '斋区';
+  const rows = PL.filter(([n]) => n !== o).map(([n, p]) => { const c = (a, b, md) => { const r = od(a, b, md); return r ? fmt(r.time_min, 1) : '—'; };
+    return `<tr><td>${esc(n)} <span class="muted small">${esc(p.group)}</span></td><td>${c(o, n, 'walk')}</td><td>${c(n, o, 'walk')}</td><td>${c(o, n, 'bike')}</td><td>${c(n, o, 'bike')}</td><td>${od(o, n, 'walk') ? od(o, n, 'walk').dist_m : '—'} m</td></tr>`; }).join('');
+  return `<div class="row small">地点 <select id="odsel">${PL.map(([n]) => `<option${n === o ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>
+    <span class="muted">${PER_ZH[st.per]}，分钟。“去”= 从所选地点出发，“回”= 到达所选地点。</span>
+    <a href="data/od.csv" download>下载全部 OD（CSV）</a></div>
+    <table><tr><th>地点</th><th>步行去</th><th>步行回</th><th>骑行去</th><th>骑行回</th><th>步行距离</th></tr>${rows}</table>`;
+};
+TABS.od.after = () => { const s = document.getElementById('odsel'); s.onchange = () => { TABS.od.origin = s.value; renderTab(); }; };
+TABS.iso = () => {
+  const md = st.mode, rows = D.iso.filter(r => r.mode === md);
+  const by = {}; rows.forEach(r => { (by[r.place] = by[r.place] || {})[r.direction] = r; });
+  ISO = ISOS[md];
+  return `<div class="small muted">${MODE_ZH[md]} · 平峰。路网长度 = 在时限内可到达的道路总长（km）；地点数不含自身。点击地点名在地图上显示出发圈。</div>
+    <table><tr><th>地点</th>${ISO.map(t => `<th>${t / 60} 分钟出发</th><th>到达</th>`).join('')}</tr>
+    ${Object.entries(by).map(([n, r]) => `<tr><td><a href="#" data-iso="${esc(n)}">${esc(n)}</a></td>${ISO.map(t => { const k = t / 60;
+      return `<td>${fmt(r['出发'][`net_km_${k}min`], 1)} km · ${r['出发'][`places_${k}min`].length}</td><td>${fmt(r['到达'][`net_km_${k}min`], 1)} km · ${r['到达'][`places_${k}min`].length}</td>`; }).join('')}</tr>`).join('')}</table>`;
+};
+TABS.iso.after = () => document.querySelectorAll('[data-iso]').forEach(a => a.onclick = ev => { ev.preventDefault();
+  st.tool = 'iso'; document.querySelector('[name=tool][value=iso]').checked = true; document.getElementById('io').value = a.dataset.iso; st.iso = placeLL(a.dataset.iso); setTool(); });
+
+// ---------- 模型：坡度响应曲线（小多图：步行 / 骑行） ----------
+function gradeChart(md) {
+  const M = D.models[md], W = 330, H = 190, l = 40, r = 64, t = 12, b = 30;
+  const series = [['本次学习', M.curve.map(p => p.learned), '--series-1'], ['DirMap 学习', M.dirmap_curve ? M.dirmap_curve.map(p => p.learned) : null, '--series-2'],
+                  ['先验', M.curve.map(p => p.prior), '--series-3']].filter(s => s[1]);
+  const gs = M.curve.map(p => p.grade), all = series.flatMap(s => s[1]);
+  const y0 = Math.min(0.7, ...all), y1 = Math.max(1.4, ...all);
+  const X = g => l + (g - gs[0]) / (gs[gs.length - 1] - gs[0]) * (W - l - r), Y = v => t + (y1 - v) / (y1 - y0) * (H - t - b);
+  const ticks = []; for (let v = Math.ceil(y0 * 10) / 10; v <= y1 + 1e-9; v += 0.1) ticks.push(+v.toFixed(1));
+  const rng = M.dirmap && M.grade_range ? M.grade_range : null;
+  let svg = `<svg width="${W}" height="${H}" role="img" aria-label="${MODE_ZH[md]}坡度对耗时的影响">`;
+  ticks.forEach(v => svg += `<line x1="${l}" x2="${W - r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${css(v === 1 ? '--axis' : '--grid')}" stroke-width="1"/>${v % 0.2 < 1e-6 || v === 1 ? `<text x="${l - 4}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(1)}×</text>` : ''}`);
+  [-0.08, -0.04, 0, 0.04, 0.08].forEach(g => svg += `<text x="${X(g)}" y="${H - b + 15}" text-anchor="middle">${g > 0 ? '+' : ''}${Math.round(g * 100)}%</text>`);
+  svg += `<text x="${(l + W - r) / 2}" y="${H - 2}" text-anchor="middle">坡度（行进方向，下坡为负）</text>`;
+  if (rng) svg += `<rect x="${X(rng[0] / 100)}" y="${t}" width="${X(rng[1] / 100) - X(rng[0] / 100)}" height="${H - t - b}" fill="${css('--grid')}" opacity="0.35"/>`;
+  series.forEach(([name, v, c]) => { svg += `<polyline fill="none" stroke="${css(c)}" stroke-width="2" points="${v.map((y, i) => `${X(gs[i])},${Y(y)}`).join(' ')}"/>`;
+    svg += `<text x="${W - r + 4}" y="${Y(v[v.length - 1]) + 4}" style="fill:${css('--text-secondary')}">${name}</text>`; });
+  svg += `<line class="xh" x1="0" x2="0" y1="${t}" y2="${H - b}" stroke="${css('--axis')}" visibility="hidden"/>`;
+  svg += `<rect x="${l}" y="${t}" width="${W - l - r}" height="${H - t - b}" fill="transparent" class="hit"/></svg>`;
+  return {svg, series, gs, X, l, r, W};
+}
+TABS.model = () => {
+  const charts = ['walk', 'bike'].map(md => { const c = gradeChart(md), M = D.models[md];
+    return `<div class="chart" data-md="${md}"><b>${MODE_ZH[md]}：坡度 → 耗时倍数</b>
+      <div class="small">${[['本次学习', '--series-1'], ['DirMap 学习', '--series-2'], ['先验', '--series-3']].map(([n, v]) => `<span class="sw" style="background:${css(v)}"></span>${n}`).join('　')}</div>
+      ${c.svg}<div class="tt"></div>
+      <div class="small muted">θ = [${M.theta.join(', ')}]${M.dirmap ? `；DirMap = [${M.dirmap.coefficients.map(v => v.toFixed(2)).join(', ')}]（${M.dirmap.tracks} 条）` : ''}<br>
+      先验：${md === 'walk' ? 'Tobler（与 DirMap 相同）' : '平地（与 DirMap 相同）'}；灰底 = 校园路段坡度 5–95% 范围。</div></div>`; }).join('');
+  const V = D.validation, variants = Object.keys(V[0] || {}).filter(k => !['track', 'mode', 'meters', 'actual_s'].includes(k));
+  const med = (md, k) => { const a = V.filter(v => v.mode === md && v[k] != null).map(v => Math.abs(v[k])).sort((p, q) => p - q), n = a.length;
+    return n ? (n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2) : null; };
+  const vt = `<table><tr><th>留一记录验证（中位绝对误差）</th>${['walk', 'bike'].map(md => `<th>${MODE_ZH[md]}（${V.filter(v => v.mode === md).length} 条）</th>`).join('')}</tr>
+    ${variants.map(k => `<tr><td>${esc(k)}</td>${['walk', 'bike'].map(md => `<td>${fmt(100 * med(md, k), 1)}%</td>`).join('')}</tr>`).join('')}</table>`;
+  const ch = D.choice.map(c => `<tr><td>${esc(c.track)}</td><td>${PER_ZH[c.period]}</td><td>${fmt(100 * c.overlap, 0)}%</td><td>${c.planned_m} / ${c.actual_m} / ${c.gps_m} m</td><td>${fmt(c.planned_pred_min, 1)} / ${fmt(c.actual_route_pred_min, 1)} 分</td><td>${fmt(c.actual_min, 1)} 分</td></tr>`).join('');
+  const mt = ['walk', 'bike'].map(md => { const M = D.models[md];
+    return `<tr><td>${MODE_ZH[md]}</td><td>${fmt(M.base_mps, 2)} m/s</td><td>${M.tracks} 条 / ${M.episodes} 段 / ${M.observations} 观测 / ${fmt(M.observed_m / 1000, 1)} km</td>
+      <td>${Object.entries(M.peak).map(([k, v]) => `${k === 'road' ? '车行道' : '步行空间'} ×${fmt(1 / v, 2)}（${M.n_peak[k]} 观测）`).join('<br>')}</td>
+      <td>${Object.entries(M.classes).map(([k, v]) => `${esc(k)} ${fmt(v, 2)}`).join('，')}</td><td>${fmt(M.residual_mad, 3)}</td></tr>`; }).join('');
+  return `${charts}
+    <h3>模型参数</h3><table><tr><th>方式</th><th>平路基准</th><th>数据</th><th>高峰耗时倍数</th><th>道路类别效率（含先验）</th><th>残差 MAD</th></tr>${mt}</table>
+    <div class="small muted">跑步与步行共享坡度/道路效应（各自有配速项），与 DirMap foot 模型一致；骑行单独。高峰倍数 &gt;1 表示更慢。</div>
+    <h3>验证</h3>${vt}<div class="small muted">去掉整条记录重拟合后预测它在实际路径上的移动耗时；误差主要来自每次出行本身的快慢（同一人骑行 3–6 m/s）。“前40%校准”用该记录前 40% 路程估计当天配速、只评估后 60%。</div>
+    <h3>路线选择校验</h3><table><tr><th>通勤记录</th><th>时段</th><th>规划与实际重合</th><th>长度 规划 / 实际(路网) / GPS</th><th>模型估时 规划 / 实际路线</th><th>实测</th></tr>${ch}</table>
+    <div class="small muted">用实测起终点重新规划；重合度低而“模型估时”接近说明存在几条差不多快的路线。实际路线估时只含匹配到路网的部分（广场、楼内等离网段不计入），实测含停留。</div>`;
+};
+TABS.model.after = () => document.querySelectorAll('.chart').forEach(div => {
+  const md = div.dataset.md, c = gradeChart(md), svg = div.querySelector('svg'), tt = div.querySelector('.tt'), xh = svg.querySelector('.xh');
+  svg.querySelector('.hit').addEventListener('mousemove', ev => {
+    const bx = svg.getBoundingClientRect(), x = ev.clientX - bx.left; let i = 0, bd = Infinity;
+    c.gs.forEach((g, j) => { const d = Math.abs(c.X(g) - x); if (d < bd) { bd = d; i = j; } });
+    xh.setAttribute('x1', c.X(c.gs[i])); xh.setAttribute('x2', c.X(c.gs[i])); xh.setAttribute('visibility', 'visible');
+    tt.style.display = 'block'; tt.style.left = (c.X(c.gs[i]) + 12) + 'px'; tt.style.top = '40px';
+    tt.innerHTML = `坡度 ${c.gs[i] > 0 ? '+' : ''}${fmt(100 * c.gs[i], 1)}%<br>` + c.series.map(([n, v, col]) => `<span class="sw" style="background:${css(col)}"></span>${n} ${fmt(v[i], 3)}×`).join('<br>');
+  });
+  svg.querySelector('.hit').addEventListener('mouseleave', () => { tt.style.display = 'none'; xh.setAttribute('visibility', 'hidden'); });
+});
+
+// ---------- KML 预览（浏览器本地解析，不上传） ----------
+function parseTrack(text, name) {
+  const pts = [];
+  if (/\.gpx$/i.test(name) || /<gpx[\s>]/.test(text)) {
+    for (const m_ of text.matchAll(/<trkpt\b([^>]*)>([\s\S]*?)<\/trkpt>/g)) {
+      const la = /lat="([^"]+)"/.exec(m_[1]), lo = /lon="([^"]+)"/.exec(m_[1]), tm = /<time>([^<]+)<\/time>/.exec(m_[2]);
+      if (la && lo && tm) pts.push([Date.parse(tm[1]) / 1000, +lo[1], +la[1]]);
+    }
+  } else {
+    for (const blk of text.matchAll(/<gx:Track\b[\s\S]*?<\/gx:Track>/g)) {
+      const w = [...blk[0].matchAll(/<when>([^<]+)<\/when>/g)].map(x => Date.parse(x[1]) / 1000), c = [...blk[0].matchAll(/<gx:coord>([^<]+)<\/gx:coord>/g)].map(x => x[1].trim().split(/\s+/).map(Number));
+      w.forEach((t, i) => c[i] && pts.push([t, c[i][0], c[i][1]]));
+    }
+  }
+  return pts.filter(p => isFinite(p[0]) && isFinite(p[1]) && isFinite(p[2])).sort((a, b) => a[0] - b[0]);
+}
+function classify(pts) {   // 与 tracks.classify 相同
+  const b = new Map(); pts.forEach(([t, lo, la]) => { const k = Math.floor((t - pts[0][0]) / 5); const [x, y] = toXY(lo, la);
+    const v = b.get(k) || [0, 0, 0, 0]; v[0] += x; v[1] += y; v[2] += t; v[3]++; b.set(k, v); });
+  const P = [...b.values()].map(v => [v[0] / v[3], v[1] / v[3], v[2] / v[3]]), V = [];
+  for (let i = 1; i < P.length; i++) { const dt = P[i][2] - P[i - 1][2]; if (dt > 0 && dt < 30) V.push(Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]) / dt); }
+  const q = (a, p) => { const s = a.slice().sort((x, y) => x - y); if (!s.length) return NaN; const i = (s.length - 1) * p, lo = Math.floor(i); return s[lo] + (s[Math.min(lo + 1, s.length - 1)] - s[lo]) * (i - lo); };
+  const mv = V.filter(v => v >= 0.5 && v <= 15); if (mv.length < 10) return ['unknown', '有效移动太少', V];
+  const p50 = q(mv, .5), p90 = q(mv, .9), fast = V.filter(v => v > 2.3 && v < 15);
+  const mean = fast.reduce((s, v) => s + v, 0) / fast.length, cv = fast.length >= 20 ? Math.sqrt(fast.reduce((s, v) => s + (v - mean) ** 2, 0) / fast.length) / mean : null;
+  const p95 = fast.length >= 20 ? q(fast, .95) : 0, dur = pts[pts.length - 1][0] - pts[0][0];
+  const desc = `移动中位 ${fmt(p50, 2)} m/s，P90 ${fmt(p90, 2)}` + (cv != null ? `，快段变异 ${fmt(cv, 2)}` : '');
+  if (p50 < 1.8 && p90 < 2.6) return ['walk', desc, V];
+  if (cv == null) return ['unknown', desc + '（快段太少）', V];
+  if (cv < 0.13) return ['run', desc, V];
+  if (p95 >= 6.0 || (cv >= 0.25 && p95 >= 5.0 && dur < 1200)) return ['bike', desc, V];
+  return ['unknown', desc + '（跑步/骑行难以区分）', V];
+}
+TABS.kml = () => `<div id="drop">把 KML（两步路 gx:Track）或 GPX 拖到这里或地图上，或 <input type="file" id="kfile" accept=".kml,.gpx" multiple><br>
+  <span class="small">只在本机浏览器解析，不会上传。</span></div><div id="kres" class="small"></div>
+  <h3>加入分析</h3><div class="small">在 trackstudy 目录：<code>python3 tracks.py add 文件.kml --mode bike</code>（或放进微信/下载目录后 <code>python3 tracks.py scan</code>）→ <code>python3 analyze.py</code>。
+  按内容去重；方式优先级：手动 &gt; DirMap 标签 &gt; 自动识别（跑步与骑行难以区分时标 unknown，需手动标注）。<code>python3 tracks.py list</code> 查看全部。</div>`;
+TABS.kml.after = () => { const f = document.getElementById('kfile'); f.onchange = () => handleFiles(f.files); bindDrop(document.getElementById('drop')); };
+function bindDrop(el) {
+  el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('over'); });
+  el.addEventListener('dragleave', () => el.classList.remove('over'));
+  el.addEventListener('drop', e => { e.preventDefault(); el.classList.remove('over'); handleFiles(e.dataTransfer.files); });
+}
+bindDrop(m.getContainer());
+async function handleFiles(files) {
+  if (tab !== 'kml') document.querySelector('[data-tab=kml]').click();
+  kmlLayer.clearLayers(); const out = [];
+  for (const file of files) {
+    const pts = parseTrack(await file.text(), file.name);
+    if (pts.length < 3) { out.push(`<p><b>${esc(file.name)}</b>：没有带时间的轨迹点（无法测速）。</p>`); continue; }
+    const [mode, desc] = classify(pts), dur = pts[pts.length - 1][0] - pts[0][0];
+    let len = 0; const ll = pts.map(p => [p[2], p[1]]);
+    for (let i = 1; i < pts.length; i++) { const a = toXY(pts[i - 1][1], pts[i - 1][2]), b = toXY(pts[i][1], pts[i][2]); len += Math.hypot(b[0] - a[0], b[1] - a[1]); }
+    // 按速度分段着色（单色序数：浅 = 慢，深 = 快）
+    const cut = mode === 'bike' ? [2, 4] : [0.9, 1.4];
+    for (let i = 1; i < pts.length; i++) { const a = toXY(pts[i - 1][1], pts[i - 1][2]), b = toXY(pts[i][1], pts[i][2]), v = Math.hypot(b[0] - a[0], b[1] - a[1]) / Math.max(pts[i][0] - pts[i - 1][0], 1);
+      L.polyline([ll[i - 1], ll[i]], {renderer: rTop, pane: 'top', color: SEQ[v < cut[0] ? 0 : v < cut[1] ? 1 : 2], weight: 4, interactive: false}).addTo(kmlLayer); }
+    const md = mode === 'bike' ? 'bike' : 'walk', a = [pts[0][1], pts[0][2]], z = [pts[pts.length - 1][1], pts[pts.length - 1][2]];
+    const r = route(a, z, `${md}_off`);
+    out.push(`<p><b>${esc(file.name)}</b>：${new Date(pts[0][0] * 1000).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}，${fmt(dur / 60, 1)} 分钟，${fmt(len, 0)} m，${pts.length} 点。<br>
+      自动识别：<b>${{walk: '步行', run: '跑步', bike: '骑行', unknown: '无法确定'}[mode]}</b>（${esc(desc)}）。<br>
+      ${r ? `模型（${MODE_ZH[md]}平峰）起点→终点最快路线 ${mins(r.t)}、${fmt(r.dist, 0)} m；实测 ${fmt(dur / 60, 1)} 分（比模型${dur > r.t ? '慢' : '快'} ${fmt(100 * Math.abs(dur / r.t - 1), 0)}%${dur > r.t ? '，实测含停留/绕行' : ''}）。` : '起终点附近没有路网，无法对比。'}<br>
+      <span class="muted">加入分析：<code>python3 tracks.py add "${esc(file.name)}"${mode === 'unknown' ? ' --mode walk|run|bike' : ''}</code></span></p>`);
+    if (ll.length) m.fitBounds(L.latLngBounds(ll).pad(0.2));
+  }
+  document.getElementById('kres').innerHTML = out.join('') + `<div class="lg small">速度：${['慢', '中', '快'].map((t, i) => `<span><i style="background:${SEQ[i]}"></i>${t}</span>`).join('')}</div>`;
+}
+TABS.about = () => { const M = D.meta;
+  return `<div class="small">
+  <p><b>数据</b>：${M.tracks.walk} 条步行、${M.tracks.run} 条跑步、${M.tracks.bike} 条骑行轨迹（校内）；${D.meta.public ? '公开版不含逐轨迹时间与原始轨迹。' : '本地完整版。'}生成于 ${esc(M.generated)}。
+  地形：${M.terrain ? `DirMap ${esc(M.terrain.name)} 共享轨迹高程（${esc(M.terrain.schema)}，${M.terrain.spacing} m 网格，${M.terrain.range[0]}–${M.terrain.range[1]} m）` : '未同步，按平地'}；路网：OSM。</p>
+  <p><b>道路识别</b>：HMM 地图匹配——候选路段垂距（σ 7 m）+ 行进方向与路段切线夹角；转移代价 = |路网距离 − GPS 直线距离| / 8 m（有截断 Dijkstra）+ 逆行惩罚，可区分紧邻平行路、避免路口假倒退；楼内/操场为“离网”状态。匹配点之间的路网路径按长度分配时间，得到“记录 × 路段 × 方向”的通行观测。</p>
+  <p><b>通行效率</b>：log(秒/米) 稳健回归（与 DirMap foot-efficiency-corridor-v2 同构）：每条记录的配速项（不惩罚）+ 方向性坡度（上坡 / ≤5% 缓下坡 / 陡下坡，向先验收缩）+ 道路类别（台阶上/下行分开；骑行走步道、人行天桥有推车先验）+ 路段效应 + 方向残差 + 高峰（车行道/步行空间分开）。约每 40 m 一份权重，同一记录同一路段同一方向最多 5 份。</p>
+  <p><b>规划</b>：有向图，A→B 与 B→A 分别计算；骑行遵守单行。起终点投影到 120 m 内最近的路段（另保留比最近者远不超过 25 m 的至多 2 条备选），门到路按直线 ×1.3 步行。高峰 = 工作日开课前 15 分钟、下课后 15 分钟、节间 ±3 分钟。</p>
+  <p><b>局限</b>：样本少（尤其骑行高峰），路段效应大多被收缩到类别水平；每次出行本身快慢差异大于道路差异。GPS 难以区分极近的平行路。坡度效应是“经配速调整后的相关”，非因果证明。</p></div>`; };
+
+// ---------- 初始化 ----------
+document.querySelector('[name=md][value=bike]').checked = true;
+setPlaces(); drawOver(); setTool(); renderTab();
+status.textContent = `离线地图已就绪 · ${D.meta.generated}`;
+window.__trackstudy = {route, snap, tree, D, st};
+})();
+</script>
+</body>
+</html>

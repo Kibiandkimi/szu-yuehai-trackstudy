@@ -1,0 +1,7 @@
+# 原始轨迹、DirMap 同步数据、个人路径：不入库
+/data/
+/config.local.json
+# 完整结果含逐轨迹明细（文件名/时间）；公开版在 docs/
+/out/
+__pycache__/
+.pytest_cache/

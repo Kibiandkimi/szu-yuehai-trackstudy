@@ -1,0 +1,7 @@
+{
+  "kml_sources": ["~/文档/xwechat_files/<wxid>/msg/file", "~/下载"],
+  "osm_reference": "~/Work/DirMap/data/reference",
+  "dirmap_ssh": ["ssh", "-p", "2222", "-i", "~/.ssh/id_rsa", "user@host"],
+  "dirmap_elevation_dir": "/opt/dirmap/data/elevation",
+  "dirmap_region": "深圳大学粤海校区"
+}
