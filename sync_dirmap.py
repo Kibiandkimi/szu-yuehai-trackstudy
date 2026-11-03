@@ -1,8 +1,9 @@
-"""从 DirMap 服务器同步：轨迹方式标签、粤海校区共享地形、DirMap 学到的通行/坡度模型。
+"""本地开发用：把 DirMap 服务器上的共享轨迹库镜像到 data/dirmap/store（与服务器同结构，只读使用）。
 
     python3 sync_dirmap.py
 
-结果写到 data/dirmap/（不入库）。没有网络时分析仍可用上次同步的数据；从未同步则按平地计算并在结果中注明。
+镜像 tracks.json、tracks/*.npz（允许账户的启用轨迹）、models.json、粤海校区地形 artifact 与对应通行模型。
+服务器上的 trackstudy 直接读 /opt/dirmap/data/elevation，不需要这一步。
 """
 import json
 import os
@@ -10,8 +11,6 @@ import subprocess
 import sys
 
 import config
-
-DST = config.DATA / 'dirmap'
 
 
 def fetch(ssh, path):
@@ -23,22 +22,27 @@ def main():
     ssh = [os.path.expanduser(a) for a in cfg['dirmap_ssh']]
     if not ssh:
         sys.exit('config.local.json 未配置 dirmap_ssh')
-    root = cfg['dirmap_elevation_dir'].rstrip('/')
-    DST.mkdir(parents=True, exist_ok=True)
-    tracks = fetch(ssh, f'{root}/tracks.json')
-    (DST / 'tracks.json').write_bytes(tracks)
-    models = json.loads(fetch(ssh, f'{root}/models.json'))
-    region = next(r for r in models['regions'] if r['name'] == cfg['dirmap_region'])
-    (DST / 'terrain.npz').write_bytes(fetch(ssh, f'{root}/{region["artifact"]}'))
-    meta = {k: v for k, v in region.items() if k not in ('trackIds', 'alignment')}
-    meta['sourceVersion'] = models['sourceVersion']; meta['builtAt'] = models['builtAt']
-    (DST / 'terrain.json').write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
-    travel = next((t for t in models.get('travelModels', []) if t['regionId'] == region['id']), None)
-    if travel:
-        (DST / 'travel.json').write_bytes(fetch(ssh, f'{root}/{travel["artifact"]}'))
-    n = len(json.loads(tracks)['tracks'])
-    print(f'同步完成：{n} 条轨迹标签；地形 {region["columns"]}×{region["rows"]} @ {region["spacingM"]} m'
-          f'（{region["minHeightM"]}–{region["maxHeightM"]} m）；通行模型 {travel["schema"] if travel else "无"}')
+    remote = cfg['dirmap_elevation_dir'].rstrip('/')
+    dst = config.store(); (dst / 'tracks').mkdir(parents=True, exist_ok=True)
+    tracks = json.loads(fetch(ssh, f'{remote}/tracks.json'))
+    models = json.loads(fetch(ssh, f'{remote}/models.json'))
+    owners = set(cfg['dirmap_owners'])
+    want = [t['id'] for t in tracks['tracks'] if t.get('enabled') and t.get('kind') != 'contours' and (not owners or t.get('ownerName') in owners)]
+    have = {p.stem for p in (dst / 'tracks').glob('*.npz')}
+    files = [f'tracks/{i}.npz' for i in want if i not in have]
+    region = next((r for r in models['regions'] if r['name'] == cfg['dirmap_region']), None)
+    if region:
+        files.append(region['artifact'])
+        tm = next((t for t in models.get('travelModels', []) if t['regionId'] == region['id']), None)
+        if tm:
+            files.append(tm['artifact'])
+    if files:   # 一次 tar 传输
+        tar = subprocess.run(ssh + ['tar', 'c', '-C', remote] + files, check=True, capture_output=True, timeout=300).stdout
+        subprocess.run(['tar', 'x', '-C', str(dst)], input=tar, check=True)
+    for name, obj in (('tracks.json', tracks), ('models.json', models)):   # 最后写索引，镜像始终自洽
+        (dst / name).write_text(json.dumps(obj, ensure_ascii=False), encoding='utf-8')
+    print(f'镜像完成：{len(want)} 条轨迹（新增 {len([f for f in files if f.startswith("tracks/")])}），'
+          f'地形 {region["name"] if region else "无"}（sourceVersion {models.get("sourceVersion")}）→ {dst}')
 
 
 if __name__ == '__main__':

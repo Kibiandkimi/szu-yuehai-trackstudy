@@ -2,7 +2,7 @@
 // 运行：NODE_PATH=/home/kibi/Work/ChineseDungeonSplit4/node_modules node tests/browser_check.cjs [docs/index.html]
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright-core');
-const file = path.resolve(process.argv[2] || path.join(__dirname, '..', 'docs', 'index.html'));
+const file = path.resolve(process.argv[2] || path.join(__dirname, '..', 'site', 'index.html'));
 const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recursive: true });
 (async () => {
   const exe = fs.readdirSync(path.join(process.env.HOME, '.cache/ms-playwright')).filter(d => d.startsWith('chromium-')).sort().pop();

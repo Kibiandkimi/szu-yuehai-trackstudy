@@ -21,12 +21,13 @@ SKIP_HW = {'construction', 'proposed', 'trunk', 'trunk_link', 'primary', 'primar
 # ---------- 地形 ----------
 class Terrain:
     """DirMap `shared-track-height` 网格（10 m，双线性；无支持处 NaN），坐标系与 DirMap Frame 一致。"""
-    def __init__(self, folder=config.DATA / 'dirmap'):
-        self.ok = (folder / 'terrain.npz').is_file()
+    def __init__(self):
+        import dirmap_store
+        self.meta, path = dirmap_store.region()
+        self.ok = bool(path and path.is_file())
         if not self.ok:
             return
-        self.meta = json.loads((folder / 'terrain.json').read_text(encoding='utf-8'))
-        with np.load(folder / 'terrain.npz', allow_pickle=False) as z:
+        with np.load(path, allow_pickle=False) as z:
             self.height = z['height'].astype(float)
             self.support = z['support'].astype(float) if 'support' in z.files else None
         lng, lat = self.meta['frame']['origin']

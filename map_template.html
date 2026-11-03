@@ -572,10 +572,13 @@ function classify(pts) {   // 与 tracks.classify 相同
   if (p95 >= 6.0 || (cv >= 0.25 && p95 >= 5.0 && dur < 1200)) return ['bike', desc, V];
   return ['unknown', desc + '（跑步/骑行难以区分）', V];
 }
-TABS.kml = () => `<div id="drop">把 KML（两步路 gx:Track）或 GPX 拖到这里或地图上，或 <input type="file" id="kfile" accept=".kml,.gpx" multiple><br>
+TABS.kml = () => `<h3>添加轨迹（保存在服务器，自动重算）</h3>
+  <div class="small">在 <a href="${esc(D.meta.dirmap_url)}" target="_blank" rel="noopener">DirMap 共享地形页</a> 上传 KML 并设置方式（步行 / 跑步 / 骑行；“自动”由本分析按速度识别），
+  服务器上的分析约 3 分钟内自动重算并更新本页。轨迹与 DirMap 共用一份，只使用 kibi 账户的已启用轨迹。</div>
+  <h3>先在本机预览</h3>
+  <div id="drop">把 KML（两步路 gx:Track）或 GPX 拖到这里或地图上，或 <input type="file" id="kfile" accept=".kml,.gpx" multiple><br>
   <span class="small">只在本机浏览器解析，不会上传。</span></div><div id="kres" class="small"></div>
-  <h3>加入分析</h3><div class="small">在 trackstudy 目录：<code>python3 tracks.py add 文件.kml --mode bike</code>（或放进微信/下载目录后 <code>python3 tracks.py scan</code>）→ <code>python3 analyze.py</code>。
-  按内容去重；方式优先级：手动 &gt; DirMap 标签 &gt; 自动识别（跑步与骑行难以区分时标 unknown，需手动标注）。<code>python3 tracks.py list</code> 查看全部。</div>`;
+  <div class="small muted">本地开发：<code>python3 sync_dirmap.py</code> 镜像服务器轨迹库；<code>python3 tracks.py add 文件.kml --mode bike</code> 加入仅本地使用的轨迹；<code>python3 tracks.py list</code> 查看。</div>`;
 TABS.kml.after = () => { const f = document.getElementById('kfile'); f.onchange = () => handleFiles(f.files); bindDrop(document.getElementById('drop')); };
 function bindDrop(el) {
   el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('over'); });
@@ -601,14 +604,14 @@ async function handleFiles(files) {
     out.push(`<p><b>${esc(file.name)}</b>：${new Date(pts[0][0] * 1000).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false})}，${fmt(dur / 60, 1)} 分钟，${fmt(len, 0)} m，${pts.length} 点。<br>
       自动识别：<b>${{walk: '步行', run: '跑步', bike: '骑行', unknown: '无法确定'}[mode]}</b>（${esc(desc)}）。<br>
       ${r ? `模型（${MODE_ZH[md]}平峰）起点→终点最快路线 ${mins(r.t)}、${fmt(r.dist, 0)} m；实测 ${fmt(dur / 60, 1)} 分（比模型${dur > r.t ? '慢' : '快'} ${fmt(100 * Math.abs(dur / r.t - 1), 0)}%${dur > r.t ? '，实测含停留/绕行' : ''}）。` : '起终点附近没有路网，无法对比。'}<br>
-      <span class="muted">加入分析：<code>python3 tracks.py add "${esc(file.name)}"${mode === 'unknown' ? ' --mode walk|run|bike' : ''}</code></span></p>`);
+      <span class="muted">加入分析：上传到 <a href="${esc(D.meta.dirmap_url)}" target="_blank" rel="noopener">DirMap</a>${mode === 'unknown' ? '，并手动选择方式' : ''}。</span></p>`);
     if (ll.length) m.fitBounds(L.latLngBounds(ll).pad(0.2));
   }
   document.getElementById('kres').innerHTML = out.join('') + `<div class="lg small">速度：${['慢', '中', '快'].map((t, i) => `<span><i style="background:${SEQ[i]}"></i>${t}</span>`).join('')}</div>`;
 }
 TABS.about = () => { const M = D.meta;
   return `<div class="small">
-  <p><b>数据</b>：${M.tracks.walk} 条步行、${M.tracks.run} 条跑步、${M.tracks.bike} 条骑行轨迹（校内）；${D.meta.public ? '公开版不含逐轨迹时间与原始轨迹。' : '本地完整版。'}生成于 ${esc(M.generated)}。
+  <p><b>数据</b>：轨迹来自 DirMap 共享轨迹库（与 DirMap 共用，服务器上有新轨迹或改方式后自动重算）；${M.tracks.walk} 条步行、${M.tracks.run} 条跑步、${M.tracks.bike} 条骑行轨迹（校内）；${D.meta.public ? '公开版不含逐轨迹时间与原始轨迹。' : '本地完整版。'}生成于 ${esc(M.generated)}。
   地形：${M.terrain ? `DirMap ${esc(M.terrain.name)} 共享轨迹高程（${esc(M.terrain.schema)}，${M.terrain.spacing} m 网格，${M.terrain.range[0]}–${M.terrain.range[1]} m）` : '未同步，按平地'}；路网：OSM。</p>
   <p><b>道路识别</b>：HMM 地图匹配——候选路段垂距（σ 7 m）+ 行进方向与路段切线夹角；转移代价 = |路网距离 − GPS 直线距离| / 8 m（有截断 Dijkstra）+ 逆行惩罚，可区分紧邻平行路、避免路口假倒退；楼内/操场为“离网”状态。匹配点之间的路网路径按长度分配时间，得到“记录 × 路段 × 方向”的通行观测。</p>
   <p><b>通行效率</b>：log(秒/米) 稳健回归（与 DirMap foot-efficiency-corridor-v2 同构）：每条记录的配速项（不惩罚）+ 方向性坡度（上坡 / ≤5% 缓下坡 / 陡下坡，向先验收缩）+ 道路类别（台阶上/下行分开；骑行走步道、人行天桥有推车先验）+ 路段效应 + 方向残差 + 高峰（车行道/步行空间分开）。约每 40 m 一份权重，同一记录同一路段同一方向最多 5 份。</p>
@@ -618,7 +621,12 @@ TABS.about = () => { const M = D.meta;
 // ---------- 初始化 ----------
 document.querySelector('[name=md][value=bike]').checked = true;
 setPlaces(); drawOver(); setTool(); renderTab();
-status.textContent = `离线地图已就绪 · ${D.meta.generated}`;
+status.textContent = `离线地图已就绪 · 数据 ${D.meta.generated}`;
+if (location.protocol.startsWith('http')) fetch('status.json', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).then(s => {
+  if (!s) return;
+  status.textContent = `已就绪 · 数据更新于 ${s.built_at}（${s.tracks} 条 DirMap 轨迹）`;
+  if (s.error) status.innerHTML += `<br><span style="color:${css('--critical')}">✗ 最近一次重算失败（${esc(s.failed_at)}），显示的是上一版结果。</span>`;
+}).catch(() => {});
 window.__trackstudy = {route, snap, tree, D, st};
 })();
 </script>

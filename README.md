@@ -1,36 +1,46 @@
 # 粤海校区道路通行效率与通勤分析（轨迹重建）
 
-在线地图：**https://kibiandkimi.github.io/szu-yuehai-trackstudy/**（单文件、离线可用；本地完整版为 `out/map.html`）。
+在线地图：**https://85.211.195.104/trackstudy/**（部署在 DirMap 同一台 Azure 机器，随 DirMap 共享轨迹自动更新；单文件、可离线保存）。
+旧的 GitHub Pages 地址现在只做跳转。
 
-用自己记录的 KML 轨迹重建深圳大学粤海校区各道路**分方向**的步行/骑行通行效率（含坡度、上下课高峰），
+用自己记录的轨迹重建深圳大学粤海校区各道路**分方向**的步行/骑行通行效率（含坡度、上下课高峰），
 在有向路网上规划路线（A→B 与 B→A 分别计算），并给出宿舍→教学楼、**教学区之间通勤**、全地点 OD
 和 **5/10/15 分钟（骑行 3/5/10 分钟）可达圈**。
 
-## 使用
+## 数据流
+
+```
+DirMap #elevation 页上传 KML / 改方式 ──► /opt/dirmap/data/elevation（tracks.json + tracks/*.npz + models.json，DirMap 写）
+                                                     │ 只读（约定见 dirmap_store.py）
+trackstudy.service（serve.py，每 60 s 检查；变化稳定 2 分钟、负载不高时）──► analyze.py ──► builds/<时间> ──原子切换──► site/
+                                                                                         nginx /trackstudy/ ◄─┘
+```
+
+- **轨迹只存一份**：在 [DirMap 共享地形页](https://85.211.195.104/#elevation) 上传 KML、设置方式（步行/跑步/骑行；“自动”由本分析按速度识别），
+  约 3 分钟内本站自动重算。只使用 `kibi` 账户的已启用轨迹（结果公开，其他贡献者的轨迹未获同意不使用；见 `config.server.json` 的 `dirmap_owners`）。
+- 页面状态栏显示数据更新时间；重算失败时保留上一版并提示，日志在服务器 `/opt/trackstudy/state/last-run.log`。
+- DirMap 的识别/配准/地形重建与本服务共用 892 MB 机器：负载 >1.5 或可用内存 <250 MB 时推迟重算（最多 30 分钟）；systemd 限制 450 MB / 1 核。
+
+## 部署与本地开发
 
 ```bash
-source ~/Work/DirMap/tools/runtime-env.sh      # numpy / scipy
-python3 sync_dirmap.py                          # 同步 DirMap：方式标签、共享地形、DirMap 学到的坡度响应（需 SSH）
-python3 analyze.py                              # 自动扫描新 KML → 重算 → 写 out/ 与 docs/（约 15 s）
-python3 -m pytest tests -q                      # 核心逻辑测试
+git commit … && bash deploy/deploy.sh          # 发布 HEAD：releases/<UTC>、current 切换、立即重算、重启 trackstudy.service
+                                                # 首次会建 venv、装 systemd 单元，并在 nginx dirmap.conf 里加 /trackstudy/（先备份）
+
+source ~/Work/DirMap/tools/runtime-env.sh       # 本地：numpy / scipy
+python3 sync_dirmap.py                          # 镜像服务器轨迹库到 data/dirmap/store（与服务器同结构）
+python3 analyze.py                              # 本地重算 → out/（完整）与 site/（公开版），并刷新本 README 的结果
+python3 -m pytest tests -q
 NODE_PATH=~/Work/ChineseDungeonSplit4/node_modules node tests/browser_check.cjs   # 浏览器验收（JS 与 Python 规划一致等）
 ```
 
-个人路径写在不入库的 `config.local.json`（格式见 `config.example.json`）。
+个人路径写在不入库的 `config.local.json`（格式见 `config.example.json`）；服务器配置 `/opt/trackstudy/config.json`（初值 `deploy/config.server.json`）。
+本地还可用 `python3 tracks.py add 文件.kml --mode bike` 把只在本地用的轨迹加进 `data/kml/`（按 sha256 与 DirMap 去重，DirMap 优先），
+`python3 tracks.py list` 查看全部轨迹及方式来源，`python3 tracks.py label <文件> <方式>` 写本地手动标签（优先于 DirMap）。
+网页“KML 轨迹”标签可在本机预览 KML/GPX（不上传）：速度、自动识别结果、与模型最快路线的对比。
 
-### 添加 KML 轨迹
-
-| 方式 | 命令 |
-| --- | --- |
-| 微信/下载目录里的新文件 | 直接 `python3 analyze.py`（或 `python3 tracks.py scan`），递归扫描 `kml_sources` |
-| 任意位置的文件或文件夹 | `python3 tracks.py add 文件.kml 目录/ --mode bike` |
-| 改方式 / 排除 | `python3 tracks.py label 20261102_191119 walk`（`exclude` 排除，`auto` 恢复自动） |
-| 查看全部 | `python3 tracks.py list`（方式与来源：手动 / DirMap / 自动识别） |
-| 先在网页里看看 | 地图页“KML 轨迹”标签或直接拖到地图上：本地解析（不上传），显示速度、自动识别结果、与模型最快路线的对比 |
-
-入库按内容 sha256 去重并复制到 `data/kml/`（微信清缓存后仍可重算）；支持两步路 `gx:Track`（可多段）和 GPX。
-方式优先级：`data/labels.csv` 手动标签 > DirMap 服务器标签（按 sha256 对应）> 自动识别。自动识别用快段速度稳定度区分跑步
-（变异系数 <0.13）与骑行，在现有 20 条已标注轨迹上 18 条判对、2 条跑走交替判为 unknown、0 条判错；unknown 不参与分析，需手动标注。
+自动识别用快段速度稳定度区分跑步（变异系数 <0.13）与骑行，在现有 20 条已标注轨迹上 18 条判对、2 条跑走交替判为 unknown、0 条判错；
+unknown 不参与分析，需在 DirMap 里设置方式。
 
 ## 方法
 
@@ -64,19 +74,21 @@ NODE_PATH=~/Work/ChineseDungeonSplit4/node_modules node tests/browser_check.cjs 
 
 | 文件 | 作用 |
 | --- | --- |
-| `tracks.py` | 轨迹库：解析、去重入库、方式标签、自动识别、CLI |
-| `sync_dirmap.py` | 从 DirMap 服务器同步标签 / 地形 / 通行模型到 `data/dirmap/` |
+| `dirmap_store.py` | 只读访问 DirMap 共享轨迹库（与 DirMap 约定的接口） |
+| `tracks.py` | 轨迹来源合并（DirMap + 本地 KML 库）、方式标签、自动识别、CLI |
+| `sync_dirmap.py` | 本地开发：镜像服务器轨迹库 |
+| `serve.py`、`deploy/` | 服务器常驻重算与原子发布；部署脚本、systemd 单元、服务器配置 |
 | `network.py` | OSM 路网、拓扑补连、地形与方向坡度、道路类别、投影 |
 | `matching.py` | HMM 地图匹配 |
 | `model.py` | 逐点方式、路段×方向观测、稳健回归 |
 | `routing.py` | 有向规划、一对多、可达圈 |
 | `places.py` | 地点（OSM 建筑质心，分组） |
-| `analyze.py` / `report.py` | 主流程 / 输出（`out/` 完整，`docs/` 公开聚合） |
+| `analyze.py` / `report.py` | 主流程 / 输出（`out/` 完整，`site/` 公开聚合） |
 | `map_template.html` / `map_view.py` | 单文件离线地图（Leaflet 1.9.4 内嵌，见 `vendor/leaflet/`） |
 
 `out/`（不入库）：`edges.csv|geojson` 路段×方向×方式速度与效应、`od.csv`、`od_dorm_teaching.csv`、`teaching_commute.csv`、
 `isochrones.csv`、`validation.csv`、`route_choice.csv`、`observed_trips.csv`、`tracks.csv`、`summary.json`、`map.html`（含轨迹匹配明细）。
-`docs/`（GitHub Pages）：同一地图的公开版（记录匿名、无时间与原始轨迹）及 `data/` 聚合 CSV。
+`site/`（服务器上为 `/opt/trackstudy/site`）：同一地图的公开版（记录匿名、无时间与原始轨迹）、`status.json` 及 `data/` 聚合 CSV。
 
 **局限**：样本少（尤其高峰骑行），多数路段效应收缩到类别水平；GPS 难以区分极近平行路；坡度效应是经配速调整后的相关，不是因果证明；
 地点用建筑群质心，宿舍到停车点/楼门的实际位置会影响几十秒。

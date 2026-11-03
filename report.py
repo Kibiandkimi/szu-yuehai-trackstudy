@@ -1,4 +1,4 @@
-"""输出：out/（完整，含逐轨迹明细，不入库）与 docs/（GitHub Pages，仅聚合结果、记录匿名）。"""
+"""输出：out/（完整，含逐轨迹明细，不公开）与 site/（公开站点，仅聚合结果、记录匿名）。"""
 import csv
 import json
 import math
@@ -132,10 +132,10 @@ def map_data(L, public):
         return anon[mode].setdefault(f, f'{"骑行" if mode == "bike" else "步行"}#{len(anon[mode]) + 1}')
     val = [dict(v, track=tid(v['track'], v['mode'])) for v in L['val']]
     choice = [dict(c, track=tid(c['track'], c['mode'])) for c in L['choice']]
+    import dirmap_store
     dm = {}
-    p = config.DATA / 'dirmap' / 'travel.json'
-    if p.is_file():
-        prof = json.loads(p.read_text(encoding='utf-8'))['profiles']
+    prof = dirmap_store.travel_profiles()
+    if prof:
         dm = {k: dict(coefficients=v['coefficients'], tracks=v['tracks'], observations=v['observations'], gradeLearned=v['gradeLearned'],
                       gradeRange=v['gradeRange']) for k, v in prof.items()}
     import model
@@ -162,7 +162,7 @@ def map_data(L, public):
                                spacing=L['terrain'].meta['spacingM'], range=[L['terrain'].meta['minHeightM'], L['terrain'].meta['maxHeightM']]) if L['terrain'].ok else None,
                   tracks=dict(walk=sum(u['label'] == 'walk' for u in L['used']), run=sum(u['label'] == 'run' for u in L['used']),
                               bike=sum(u['label'] == 'bike' for u in L['used'])),
-                  peak=L['PEAK'], breaks=L['BREAKS'], walk_speed=round(L['walk_speed'], 4), snap=dict(k=routing.SNAP_K, r=routing.SNAP_R, slack=routing.SNAP_SLACK, detour=routing.ACCESS_DETOUR)),
+                  peak=L['PEAK'], breaks=L['BREAKS'], dirmap_url=config.load()['dirmap_url'], site_url=config.load()['site_url'], walk_speed=round(L['walk_speed'], 4), snap=dict(k=routing.SNAP_K, r=routing.SNAP_R, slack=routing.SNAP_SLACK, detour=routing.ACCESS_DETOUR)),
         nodes=[[k[0], k[1]] for k in node_ix], edges=E, cost=cost, eff=eff, support=support, observed=observed,
         places=P, od=L['od'], teaching=L['teaching'], iso=iso_rows, models=models, validation=val, choice=choice, tracks=used,
         observed_trips=[dict(o, file=tid(o['file'], o['mode'])) for o in L['obs_trips']],
@@ -170,7 +170,7 @@ def map_data(L, public):
 
 
 def write_outputs(L):
-    out, site = config.OUT, config.SITE
+    out, site = config.out_dir(), config.site_dir()
     out.mkdir(exist_ok=True); (site / 'data').mkdir(parents=True, exist_ok=True)
     L['teaching'] = teaching_commute(L['od'], L['P'])
     L['obs_trips'] = observed_trips(L)
@@ -199,7 +199,8 @@ def write_outputs(L):
     _csv(site / 'data' / 'teaching_commute.csv', L['teaching'])
     _csv(site / 'data' / 'edges.csv', et)
     _csv(site / 'data' / 'isochrones.csv', [dict(r, **{k: '、'.join(v) for k, v in r.items() if isinstance(v, list)}) for r in L['iso']])
-    readme_results(L)
+    if config.load()['update_readme']:
+        readme_results(L)
     print(f'输出：{out}/map.html（{(out / "map.html").stat().st_size / 1e6:.1f} MB），{site}/index.html')
 
 
@@ -208,10 +209,8 @@ def readme_results(L):
     M = {md: L['fits'][fam] for md, fam in (('walk', 'foot'), ('bike', 'bike'))}
     T = {(r['origin'], r['dest'], r['mode'], r['period']): r for r in L['od']}
     t = lambda a, b, md: T[(a, b, md, 'off')]['time_min']
-    dm = {}
-    p = config.DATA / 'dirmap' / 'travel.json'
-    if p.is_file():
-        dm = {k: v['coefficients'] for k, v in json.loads(p.read_text(encoding='utf-8'))['profiles'].items()}
+    import dirmap_store
+    dm = {k: v['coefficients'] for k, v in (dirmap_store.travel_profiles() or {}).items()}
     pct = lambda th, g: 100 * (math.exp(float(network.grade_features(g) @ th)) - 1)
     val = {}
     for v in L['val']:

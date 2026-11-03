@@ -1,0 +1,20 @@
+[Unit]
+Description=trackstudy: watch DirMap shared tracks and rebuild campus travel analysis
+After=network.target dirmap.service
+
+[Service]
+User=kibi
+WorkingDirectory=/opt/trackstudy/current
+Environment=TRACKSTUDY_CONFIG=/opt/trackstudy/config.json
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+ExecStart=/opt/trackstudy/venv/bin/python -B /opt/trackstudy/current/serve.py
+Nice=10
+MemoryMax=450M
+CPUQuota=100%
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

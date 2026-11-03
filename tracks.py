@@ -5,8 +5,9 @@
     python3 tracks.py label 20261102_191119 bike   # 修改方式（walk/run/bike/exclude/auto）
     python3 tracks.py list                  # 列出全部轨迹、方式来源与是否参与分析
 
-入库 = 按内容 sha256 去重后复制到 data/kml/（微信清理缓存后仍可重算）。
-方式优先级：data/labels.csv 手动标签 > DirMap 服务器标签（sync_dirmap.py 同步，按 sha256 对应）> 自动识别。
+轨迹来源：① DirMap 共享轨迹库（主来源；服务器上直接只读，本地由 sync_dirmap.py 镜像）——在 DirMap #elevation 页上传、
+改方式即可，服务器上的 trackstudy 会自动重算；② 本地 KML 库 data/kml/（补充；按内容 sha256 去重，与 DirMap 重复的以 DirMap 为准）。
+方式优先级：data/labels.csv 手动标签 > DirMap 标签 > 自动识别。
 自动识别只把明确的步行/骑行用于分析；跑步与骑行速度重叠时标为 unknown，需要手动标注。
 """
 import argparse
@@ -24,12 +25,12 @@ from pathlib import Path
 import numpy as np
 
 import config
+import dirmap_store
 
 TZ = timezone(timedelta(hours=8))
 KML_DIR = config.DATA / 'kml'
 INDEX = config.DATA / 'library.json'
 LABELS = config.DATA / 'labels.csv'
-DIRMAP_TRACKS = config.DATA / 'dirmap' / 'tracks.json'
 MODES = ('walk', 'run', 'bike', 'exclude')
 ALIASES = {'bicycle': 'bike', 'cycling': 'bike', 'ride': 'bike', 'foot': 'walk', 'hike': 'walk', 'running': 'run'}
 
@@ -151,17 +152,6 @@ def scan(quiet=False):
 
 
 # ---------- 方式 ----------
-def _dirmap_labels():
-    if not DIRMAP_TRACKS.is_file():
-        return {}
-    out = {}
-    for t in json.loads(DIRMAP_TRACKS.read_text(encoding='utf-8'))['tracks']:
-        a = ALIASES.get(t.get('activity'), t.get('activity'))
-        if a in MODES and t.get('sourceSha256'):
-            out[t['sourceSha256']] = a
-    return out
-
-
 def moving_speeds(t, lon, lat):
     """5 s 平均位置之间的速度（m/s），用于自动识别与摘要。"""
     x, y = xy(lon, lat)
@@ -198,24 +188,52 @@ def classify(t, lon, lat):
 
 
 def load_tracks():
-    """库中全部轨迹（已排序），附方式与来源。"""
-    ix = _index(); man = labels(); dm = _dirmap_labels()
-    out = []
-    for name in sorted(ix):
-        p = KML_DIR / name
-        if not p.is_file():
-            continue
-        t, lon, lat, h = parse(p)
-        info = ix[name]
-        key = next((k for k in (name, Path(name).stem) if k in man), None)
+    """全部可用轨迹（DirMap 共享库 + 本地 KML 库，按 sha256 去重），附方式与来源。"""
+    man = labels(); out = []; seen = set()
+
+    def label_for(names, mode):
+        key = next((k for k in names if k in man), None)
         if key:
-            mode, src = man[key]['mode'], '手动'
-        elif info['sha256'] in dm:
-            mode, src = dm[info['sha256']], 'DirMap'
+            return man[key]['mode'], '手动'
+        return mode
+
+    recs = dirmap_store.records()
+    names = [r.get('fileName') or r['id'][:12] for r in recs]
+    dup = {n for n in names if names.count(n) > 1}
+    for r, name in zip(recs, names):
+        parsed = dirmap_store.load(r)
+        if parsed is None:
+            continue
+        t, lon, lat, h = parsed
+        name = f'{name}#{r["id"][:6]}' if name in dup else name
+        got = label_for((name, Path(name).stem, r['id']), None)
+        if got:
+            mode, src = got
+        elif ACTIVITY_OK(r.get('activity')):
+            mode, src = dirmap_store.ACTIVITY[r['activity']], 'DirMap'
         else:
             mode, why = classify(t, lon, lat); src = '自动：' + why
-        out.append(dict(file=name, sha256=info['sha256'], label=mode, label_source=src, t=t, lon=lon, lat=lat, h=h))
-    return out
+        out.append(dict(file=name, sha256=r.get('sourceSha256') or r['id'], label=mode, label_source=src, source='DirMap',
+                        t=t, lon=lon, lat=lat, h=h))
+        seen.update(x for x in (r.get('sourceSha256'), r['id']) if x)
+    if config.load()['use_kml_library']:
+        ix = _index()
+        for name in sorted(ix):
+            p = KML_DIR / name
+            if not p.is_file() or ix[name]['sha256'] in seen:
+                continue
+            t, lon, lat, h = parse(p)
+            got = label_for((name, Path(name).stem), None)
+            if got:
+                mode, src = got
+            else:
+                mode, why = classify(t, lon, lat); src = '自动：' + why
+            out.append(dict(file=name, sha256=ix[name]['sha256'], label=mode, label_source=src, source='本地', t=t, lon=lon, lat=lat, h=h))
+    return sorted(out, key=lambda d: d['file'])
+
+
+def ACTIVITY_OK(a):
+    return dirmap_store.ACTIVITY.get(a) is not None
 
 
 def main(argv=None):
@@ -235,16 +253,17 @@ def main(argv=None):
         print(f'新入库 {len(new)} 个')
     elif args.cmd == 'label':
         ix = _index()
-        match = [n for n in ix if n == args.file or Path(n).stem == args.file or ix[n]['sha256'].startswith(args.file)]
+        known = {tr['file']: tr['sha256'] for tr in load_tracks()} | {n: v['sha256'] for n, v in ix.items()}
+        match = [n for n in known if n == args.file or Path(n).stem == args.file or known[n].startswith(args.file)]
         if len(match) != 1:
             sys.exit(f'找不到唯一匹配：{args.file}（候选 {match}）')
         set_label(match[0], args.mode, args.note)
         print(f'{match[0]} → {args.mode}')
     elif args.cmd == 'list':
-        print(f'{"文件":<26}{"开始":<18}{"时长":>7}{"点数":>7}  方式    来源')
+        print(f'{"文件":<26}{"开始":<18}{"时长":>7}{"点数":>7}  {"库":<7}方式    方式来源')
         for tr in load_tracks():
             d = datetime.fromtimestamp(tr['t'][0], TZ).strftime('%m-%d %H:%M')
-            print(f'{tr["file"]:<26}{d:<18}{(tr["t"][-1]-tr["t"][0])/60:>6.1f}m{len(tr["t"]):>7}  {tr["label"]:<7} {tr["label_source"]}')
+            print(f'{tr["file"]:<26}{d:<18}{(tr["t"][-1]-tr["t"][0])/60:>6.1f}m{len(tr["t"]):>7}  {tr["source"]:<7}{tr["label"]:<7} {tr["label_source"]}')
 
 
 if __name__ == '__main__':

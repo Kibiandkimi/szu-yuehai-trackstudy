@@ -1,6 +1,6 @@
 """粤海校区道路通行效率（轨迹重建）主流程。
 
-    python3 analyze.py            # 先扫描新 KML（tracks.py scan），再完整重算，写 out/ 与 docs/
+    python3 analyze.py            # 先扫描新 KML（tracks.py scan），再完整重算，写 out/ 与 site/
 
 步骤：轨迹库 → 逐点方式 → HMM 地图匹配 → 路段×方向观测 → 稳健回归（方向性坡度/道路类别/路段/高峰）
 → 留一记录验证 → 有向路网规划：宿舍→教学楼、教学区之间（双向）、全地点 OD、5/10 分钟可达圈 → 地图。
@@ -25,7 +25,6 @@ import tracks as tracks_mod
 from routing import Planner
 from tracks import TZ, xy
 
-OUT, SITE = config.OUT, config.SITE
 
 # ---------- 上下课高峰（来自课表；仅工作日） ----------
 STARTS = ['8:30', '10:15', '13:30', '16:00', '19:00', '20:30']   # 主要开课时刻（含大课间后）
@@ -213,13 +212,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--no-scan', action='store_true')
     args = ap.parse_args()
-    OUT.mkdir(exist_ok=True)
     if not args.no_scan:
         new = tracks_mod.scan(quiet=True)
         if new:
             print('新入库轨迹：', ', '.join(new))
     terrain = network.Terrain()
-    print('地形：', f'DirMap {terrain.meta["name"]} {terrain.meta["schema"]}' if terrain.ok else '未同步（按平地；运行 sync_dirmap.py）')
+    print('地形：', f'DirMap {terrain.meta["name"]} {terrain.meta["schema"]}' if terrain.ok else '无 DirMap 地形（按平地；本地请运行 sync_dirmap.py）')
     edges = network.build_graph(terrain)
     print(f'路网：{len(edges)} 段，{sum(e["len"] for e in edges)/1000:.1f} km；有地形高程 {sum(e["len"] for e in edges if e["h_known"])/1000:.1f} km')
     trs = []

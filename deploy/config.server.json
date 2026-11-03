@@ -1,0 +1,13 @@
+{
+  "dirmap_store": "/opt/dirmap/data/elevation",
+  "osm_reference": "/opt/dirmap/data/reference",
+  "dirmap_owners": ["kibi"],
+  "use_kml_library": false,
+  "kml_sources": [],
+  "out_dir": "/opt/trackstudy/out",
+  "site_dir": "/opt/trackstudy/builds/manual",
+  "builds_dir": "/opt/trackstudy/builds",
+  "site_link": "/opt/trackstudy/site",
+  "state_dir": "/opt/trackstudy/state",
+  "update_readme": false
+}

@@ -5,3 +5,7 @@
 /out/
 __pycache__/
 .pytest_cache/
+/site/
+/site-live
+/builds/
+/state/
