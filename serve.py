@@ -24,6 +24,11 @@ ROOT = Path(__file__).resolve().parent
 POLL, SETTLE, MAX_DEFER = 60, 120, 1800
 
 
+def bj():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
+
+
 def code_version():
     p = ROOT / 'REVISION'
     return p.read_text().strip() if p.is_file() else 'dev'
@@ -64,7 +69,7 @@ def build(cfg, fp):
     if proc.returncode != 0 or not (target / 'index.html').is_file():
         shutil.rmtree(target, ignore_errors=True)
         raise RuntimeError(log[-1500:])
-    st = dict(input=fp, built_at=time.strftime('%Y-%m-%d %H:%M:%S'), seconds=round(time.time() - t0, 1),
+    st = dict(input=fp, built_at=bj(), seconds=round(time.time() - t0, 1),
               revision=code_version(), tracks=len(dirmap_store.records()), error=None)
     (target / 'status.json').write_text(json.dumps(st, ensure_ascii=False), encoding='utf-8')
     link = Path(cfg['site_link']); tmp = link.with_name(link.name + '.new')
@@ -98,7 +103,7 @@ def main():
                     try:
                         st = build(cfg, fp); print('完成', st, flush=True)
                     except Exception as e:
-                        st = dict(st, input=fp, error=str(e)[-1500:], failed_at=time.strftime('%Y-%m-%d %H:%M:%S'))
+                        st = dict(st, input=fp, error=str(e)[-1500:], failed_at=bj())
                         print('失败', e, flush=True)
                     write_status(cfg, st); deferred = None
             if args.once:

@@ -11,7 +11,9 @@ import config
 import network
 import routing
 from map_view import render_map
-from tracks import LAT0, LON0
+from datetime import datetime
+
+from tracks import LAT0, LON0, TZ
 
 
 def _csv(path, rows):
@@ -157,7 +159,7 @@ def map_data(L, public):
             for u in L['used']]
     iso_rows = [dict(r) for r in L['iso']]
     return dict(
-        meta=dict(generated=time.strftime('%Y-%m-%d %H:%M'), public=public, lat0=LAT0, lon0=LON0,
+        meta=dict(generated=datetime.now(TZ).strftime('%Y-%m-%d %H:%M'), public=public, lat0=LAT0, lon0=LON0,
                   terrain=dict(name=L['terrain'].meta['name'], schema=L['terrain'].meta['schema'], version=L['terrain'].meta.get('sourceVersion'),
                                spacing=L['terrain'].meta['spacingM'], range=[L['terrain'].meta['minHeightM'], L['terrain'].meta['maxHeightM']]) if L['terrain'].ok else None,
                   tracks=dict(walk=sum(u['label'] == 'walk' for u in L['used']), run=sum(u['label'] == 'run' for u in L['used']),
@@ -221,7 +223,7 @@ def readme_results(L):
     tc = [r for r in L['teaching'] if r['period'] == 'off']
     big = sorted((r for r in tc if r['mode'] == 'bike'), key=lambda r: -abs(r['asym_pct']))[:3]
     used = L['used']; mt = [u for u in used if u['matched'] > 0]
-    lines = [f"## 主要结果（{time.strftime('%Y-%m-%d')}，{sum(u['label'] in ('walk', 'run') for u in used)} 条步行/跑步 + "
+    lines = [f"## 主要结果（{datetime.now(TZ).strftime('%Y-%m-%d')}，{sum(u['label'] in ('walk', 'run') for u in used)} 条步行/跑步 + "
              f"{sum(u['label'] == 'bike' for u in used)} 条骑行校内轨迹）", '']
     for md, zh in (('bike', '骑行'), ('walk', '步行')):
         th = M[md].theta; d = dm.get('bicycle' if md == 'bike' else 'foot')

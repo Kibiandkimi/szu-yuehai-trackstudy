@@ -2,7 +2,8 @@
 // 运行：NODE_PATH=/home/kibi/Work/ChineseDungeonSplit4/node_modules node tests/browser_check.cjs [docs/index.html]
 const path = require('path'), fs = require('fs');
 const { chromium } = require('playwright-core');
-const file = path.resolve(process.argv[2] || path.join(__dirname, '..', 'site', 'index.html'));
+const arg = process.argv[2] || path.join(__dirname, '..', 'site', 'index.html');
+const url = /^https?:/.test(arg) ? arg : 'file://' + path.resolve(arg);
 const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recursive: true });
 (async () => {
   const exe = fs.readdirSync(path.join(process.env.HOME, '.cache/ms-playwright')).filter(d => d.startsWith('chromium-')).sort().pop();
@@ -12,8 +13,8 @@ const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recur
     const page = await browser.newPage({ viewport: { width: w, height: h } });
     const errors = [];
     page.on('pageerror', e => errors.push(String(e))); page.on('console', m => m.type() === 'error' && errors.push(m.text()));
-    page.on('request', r => { if (!r.url().startsWith('file:') && !r.url().startsWith('data:')) errors.push('外部请求 ' + r.url()); });
-    await page.goto('file://' + file);
+    page.on('request', r => { if (!r.url().startsWith('file:') && !r.url().startsWith('data:') && !r.url().startsWith(new URL(url).origin)) errors.push('外部请求 ' + r.url()); });
+    await page.goto(url);
     await page.waitForFunction(() => document.getElementById('map-status').textContent.includes('就绪'), null, { timeout: 15000 });
     if (tag === 'desktop') {
       // JS 与 Python 规划一致（OD 表由 Python 计算）
