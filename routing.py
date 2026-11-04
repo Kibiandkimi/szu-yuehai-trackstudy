@@ -140,17 +140,32 @@ class Planner:
             out['arcs'] += l['arcs']; out['geo'] += l['geo']
         return out
 
-    def reach(self, dist, limit, reverse=False):
-        """一对多结果 → 各路段在 limit 秒内可达的长度（两端分别推进，合计不超过路段长）。
-        reverse=True（到达圈）时从端点向路段内部“倒推”，用的是走向该端点的方向。"""
+    def reach(self, dist, limit, reverse=False, snaps=()):
+        """一对多结果 → 各路段在 limit 秒内可达的长度。
+        从端点与起点投影分别推进，合并重叠区间；reverse=True 使用相反方向的通行代价。
+        snaps 必须与 tree_from 的投影一致，否则会漏掉起点所在路段的中间部分。"""
         out = {}
         for e in self.edges:
-            L = e['len']; r = 0.0
-            for node, d in ((e['a'], '-' if reverse else '+'), (e['b'], '+' if reverse else '-')):
+            L = e['len']; intervals = []
+            for node, d, left in ((e['a'], '-' if reverse else '+', True), (e['b'], '+' if reverse else '-', False)):
                 if node in dist and (e['id'], d) in self.cost and dist[node][0] < limit:
-                    r += min(L, (limit - dist[node][0]) / (self.cost[(e['id'], d)] / L))
-            if r > 0:
-                out[e['id']] = min(L, r)
+                    r = min(L, (limit - dist[node][0]) / (self.cost[(e['id'], d)] / L))
+                    intervals.append((0, r) if left else (L - r, L))
+            # 可以直接从投影点走进路段，无需先到达任一端点（单行路尤其需要）。
+            for eid, s, acc in snaps:
+                budget = limit - acc / self.walk
+                if eid != e['id'] or budget <= 0:
+                    continue
+                for d, right in (('-' if reverse else '+', True), ('+' if reverse else '-', False)):
+                    if (eid, d) in self.cost:
+                        r = budget / (self.cost[(eid, d)] / L)
+                        intervals.append((s, min(L, s + r)) if right else (max(0, s - r), s))
+            end = total = 0.0
+            for lo, hi in sorted(intervals):
+                total += max(0, hi - max(lo, end))
+                end = max(end, hi)
+            if total > 0:
+                out[e['id']] = total
         return out
 
     def _summary(self, c, arcs, geo, access_m):

@@ -20,9 +20,7 @@ const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recur
       // JS 与 Python 规划一致（OD 表由 Python 计算）
       const diff = await page.evaluate(() => {
         const { placeRoute, D } = window.__trackstudy, out = [];
-        const names = Object.keys(D.places);
         for (const r of D.od) {
-          if (!['斋区', '汇文楼', '致理楼', '乔区'].includes(r.origin)) continue;
           const js = placeRoute(r.origin, r.dest, `${r.mode}_${r.period}`);
           out.push(js ? Math.abs(js.t / 60 - r.time_min) / r.time_min : 1);
         }
@@ -30,6 +28,52 @@ const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recur
       });
       console.log('JS/Python OD 对比', diff);
       if (diff.bad) fails.push(`JS 与 Python 规划不一致：${diff.bad}/${diff.n}，最大 ${diff.max}`);
+      const custom = await page.evaluate(() => {
+        const { placeRoute, EDGES } = window.__trackstudy, out = [];
+        for (const dest of ['汇文楼', '致理楼']) for (const reverse of [false, true]) for (const per of ['off', 'peak']) {
+          const r = placeRoute(reverse ? dest : '斋区', reverse ? '斋区' : dest, `bike_${per}`);
+          const edges = r ? r.arcs.filter(a => a[2] > 1).map(a => EDGES[a[0]]) : [];
+          out.push({ dest, reverse, per, custom: !!(r && r.custom), minutes: r && r.t / 60,
+            valid: dest === '汇文楼' ? edges.length > 0 && !edges.some(e => e.hw === 'steps') : edges.some(e => e.name === '召南天桥') });
+        }
+        return out;
+      });
+      console.log('指定路线检查', custom);
+      if (custom.some(r => !r.custom || !r.valid)) fails.push('斋区自定义路线未避开台阶或未经过召南天桥');
+      const iso = await page.evaluate(() => {
+        const T = window.__trackstudy, out = {n: 0, maxKm: 0, badLength: 0, badPlaces: 0, partialEdge: null};
+        for (const row of T.D.iso) {
+          const p = T.D.places[row.place], key = `${row.mode}_off`, reverse = row.direction === '到达';
+          const limits = row.mode === 'walk' ? [300, 600, 900] : [180, 300, 600];
+          const S = T.snap(p.lon, p.lat, key), dist = T.tree(S, key, reverse, Math.max(...limits) + 60);
+          const places = T.isoPlaces([p.lon, p.lat], key, reverse, row.place);
+          for (const limit of limits) {
+            let length = 0;
+            for (const segs of T.reachSegments(dist, limit, key, reverse, S).values())
+              for (const [lo, hi] of segs) length += hi - lo;
+            const delta = Math.abs(length / 1000 - row[`net_km_${limit / 60}min`]);
+            out.n++; out.maxKm = Math.max(out.maxKm, delta);
+            if (delta > 0.011) out.badLength++;
+            const expected = new Set(row[`places_${limit / 60}min`]);
+            // CSV 的 OD 时间四舍五入至 0.01 分钟，阈值边界允许 0.3 秒差。
+            for (const [name, seconds] of places)
+              if (expected.has(name) !== (seconds <= limit) && Math.abs(seconds - limit) > 0.31) out.badPlaces++;
+            if ([...expected].some(name => !places.some(p => p[0] === name))) out.badPlaces++;
+          }
+        }
+        const e = T.EDGES.find(e => e.oneway && e.len > 20 && !T.D.rules.edges.some(r => r.key === e.key));
+        if (e) {
+          const limit = T.D.cost.bike_off[e.id][0] * 0.1, S = [[e.id, e.len * 0.95, 0]];
+          const get = reverse => T.reachSegments(new Map(), limit, 'bike_off', reverse, S).get(e.id);
+          const forward = get(false), backward = get(true);
+          out.partialEdge = !!(forward && backward && Math.abs(forward[0][0] - e.len * 0.95) < 1e-6 &&
+            Math.abs(forward[0][1] - e.len) < 1e-6 && Math.abs(backward[0][0] - e.len * 0.85) < 1e-6 &&
+            Math.abs(backward[0][1] - e.len * 0.95) < 1e-6);
+        }
+        return out;
+      });
+      console.log('JS/Python 可达圈对比', iso);
+      if (iso.badLength || iso.badPlaces || iso.partialEdge === false) fails.push('可达圈路网长度、地点或单行路起点片段异常');
       await page.screenshot({ path: `${shots}/route.png` });
       const rule = await page.evaluate(() => {
         const T = window.__trackstudy, { D } = T;
@@ -61,6 +105,27 @@ const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recur
         if (await page.isVisible('#savebar')) fails.push('放弃修改后保存栏仍在');
       }
       await page.evaluate(() => { document.querySelector('[name=tool][value=route]').click(); });
+      // 真实编辑途经点：撤销一点，再点地图补回，预览双向路线后放弃修改。
+      await page.click('#vedit');
+      await page.click('#vundo');
+      const via = await page.evaluate(() => {
+        const T = window.__trackstudy, point = T.D.rules.routes.find(r => r.origin === '斋区' && r.dest === '汇文楼').via.at(-1);
+        T.map.setView([point[1], point[0]], 18, {animate: false});
+        const p = T.map.latLngToContainerPoint([point[1], point[0] + 0.00003]), r = T.map.getContainer().getBoundingClientRect();
+        return [p.x + r.left, p.y + r.top];
+      });
+      await page.mouse.click(via[0], via[1]);
+      if (await page.evaluate(() => window.__trackstudy.st.editVia.via.length) !== 3) fails.push('地图点击未添加自定义途经点');
+      await page.click('#vdone');
+      const edited = await page.evaluate(() => {
+        const T = window.__trackstudy;
+        return ['斋区|汇文楼', '汇文楼|斋区'].every(pair => {
+          const [o, d] = pair.split('|'), route = T.placeRoute(o, d, 'bike_off');
+          return route && route.custom && route.custom.via.length === 3 && route.t > 0;
+        });
+      });
+      if (!edited || !(await page.isVisible('#savebar'))) fails.push('自定义路线编辑后未更新双向预览或保存栏');
+      if (await page.isVisible('#rdiscard')) await page.click('#rdiscard');
       for (const t of ['teach', 'dorm', 'od', 'iso', 'model', 'kml', 'about']) {
         await page.click(`[data-tab=${t}]`);
         const txt = await page.textContent('#dbody');

@@ -202,12 +202,12 @@ class Fit:
             self.pace_w[(r['track'], r['mode'])] += ww
 
     def base(self, mode, tracks=None):
-        """基准 log(秒/米)：指定记录（默认全部）该方式配速项的加权平均。"""
+        """基准 log(秒/米)：指定记录（默认全部）该方式配速项的平均，每条记录权重相同（一次典型出行），
+        不按观测量加权——否则一条长距离骑行会主导“通勤配速”。"""
         ks = [k for k in self.alpha if k[1] == mode and (tracks is None or k[0] in tracks)] or [k for k in self.alpha if k[1] == mode]
         if not ks:
             return None
-        w = np.array([self.pace_w[k] for k in ks]); a = np.array([self.alpha[k] for k in ks])
-        return float((w * a).sum() / w.sum())
+        return float(np.mean([self.alpha[k] for k in ks]))
 
     def road_log(self, e, d, peak=False, parts=('grade', 'cls', 'edge', 'dir', 'peak')):
         """路段 e 方向 d 相对平地基准的 log 耗时（不含配速项）。"""

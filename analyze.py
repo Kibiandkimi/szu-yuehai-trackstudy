@@ -204,7 +204,7 @@ def isochrones(planners, P, od):
                 dist = pl.tree_from(S, reverse=rev, limit=max(limits) + 60)
                 rec = dict(place=o, group=P[o]['group'], mode=mode, direction=direction)
                 for lim in limits:
-                    rec[f'net_km_{lim // 60}min'] = round(sum(pl.reach(dist, lim, reverse=rev).values()) / 1000, 2)
+                    rec[f'net_km_{lim // 60}min'] = round(sum(pl.reach(dist, lim, reverse=rev, snaps=S).values()) / 1000, 2)
                     rec[f'places_{lim // 60}min'] = [d for d in P if d != o and T.get((d, o, mode) if rev else (o, d, mode), 1e9) <= lim]
                 out.append(rec)
     return out

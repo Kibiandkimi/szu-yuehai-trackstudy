@@ -559,33 +559,67 @@ document.getElementById('rswap').onclick = () => { [st.A, st.B] = [st.B, st.A]; 
 // ---------- 可达圈 ----------
 const ISOS = {walk: [300, 600, 900], bike: [180, 300, 600]};
 let ISO = ISOS.bike;
+function reachSegments(dist, limit, key, reverse = false, snaps = []) {
+  const C = graph(key).C, result = new Map();
+  for (const e of EDGES) {
+    const intervals = [];
+    for (const [node, d, left] of [[e.a, reverse ? 1 : 0, true], [e.b, reverse ? 0 : 1, false]]) {
+      const t = dist.get(node), c = C[e.id][d];
+      if (t && c != null && t[0] < limit) {
+        const r = Math.min(e.len, (limit - t[0]) / (c / e.len));
+        intervals.push(left ? [0, r] : [e.len - r, e.len]);
+      }
+    }
+    for (const [eid, s, acc] of snaps) {
+      const budget = limit - acc / WALK;
+      if (eid !== e.id || budget <= 0) continue;
+      for (const [d, right] of [[reverse ? 1 : 0, true], [reverse ? 0 : 1, false]]) {
+        const c = C[e.id][d];
+        if (c != null) {
+          const r = budget / (c / e.len);
+          intervals.push(right ? [s, Math.min(e.len, s + r)] : [Math.max(0, s - r), s]);
+        }
+      }
+    }
+    const merged = [];
+    intervals.sort((a, b) => a[0] - b[0]);
+    for (const [lo, hi] of intervals) {
+      if (hi <= lo) continue;
+      const last = merged[merged.length - 1];
+      if (last && lo <= last[1]) last[1] = Math.max(last[1], hi);
+      else merged.push([lo, hi]);
+    }
+    if (merged.length) result.set(e.id, merged);
+  }
+  return result;
+}
+function isoPlaces(origin, key, reverse = false, originName = null) {
+  return PL.map(([n, p]) => {
+    if (n === originName) return null;  // 只排除起点本身，保留相邻但不同的地点（如斋区与荔山餐厅）。
+    const r = originName ? (reverse ? placeRoute(n, originName, key) : placeRoute(originName, n, key)) :
+      (reverse ? route([p.lon, p.lat], origin, key) : route(origin, [p.lon, p.lat], key));
+    return r && [n, r.t];
+  }).filter(Boolean).sort((a, b) => a[1] - b[1]);
+}
 function drawIso() {
   isoLayer.clearLayers(); const box = document.getElementById('ires'); ISO = ISOS[st.mode];
   document.getElementById('ilg').innerHTML = ISO.map((t, i) => `<span><i style="background:${SEQ[2 - i]}"></i>≤${t / 60} 分钟</span>`).join('');
   if (!st.iso) { box.textContent = '选择地点或在地图上点一下。'; return; }
-  const k = key(), C = graph(k).C, rev = st.idir === 'in', S = snap(st.iso[0], st.iso[1], k);
+  const k = key(), rev = st.idir === 'in', S = snap(st.iso[0], st.iso[1], k);
   if (!S.length) { box.textContent = '120 m 内没有可通行道路。'; return; }
   const dist = tree(S, k, rev, ISO[2] + 60);
   L.circleMarker([st.iso[1], st.iso[0]], {renderer: rTop, pane: 'top', radius: 7, color: css('--surface-1'), weight: 2, fillColor: css('--text-primary'), fillOpacity: 1}).addTo(isoLayer);
   const km = [0, 0, 0];
   for (let bi = ISO.length - 1; bi >= 0; bi--) {
     const lim = ISO[bi], color = SEQ[2 - bi];
-    for (const e of EDGES) {
-      // 出发圈：从 a 沿正向推进、从 b 沿反向；到达圈：走向 a 用反向、走向 b 用正向
-      const fa = dist.get(e.a), fb = dist.get(e.b), ca = C[e.id][rev ? 1 : 0], cb = C[e.id][rev ? 0 : 1];
-      let ra = 0, rb = 0;
-      if (fa && ca != null && fa[0] < lim) ra = Math.min(e.len, (lim - fa[0]) / (ca / e.len));
-      if (fb && cb != null && fb[0] < lim) rb = Math.min(e.len, (lim - fb[0]) / (cb / e.len));
-      if (ra + rb <= 0) continue;
-      km[bi] += Math.min(e.len, ra + rb) / 1000;
-      const segs = ra + rb >= e.len ? [[0, e.len]] : [ra > 0 ? [0, ra] : null, rb > 0 ? [e.len - rb, e.len] : null].filter(Boolean);
-      segs.forEach(([s0, s1]) => L.polyline(sub(e, s0, s1), {renderer: rOver, pane: 'over', color, weight: 5, opacity: 0.9, interactive: false}).addTo(isoLayer));
+    for (const [eid, segs] of reachSegments(dist, lim, k, rev, S)) {
+      for (const [s0, s1] of segs) {
+        km[bi] += (s1 - s0) / 1000;
+        L.polyline(sub(EDGES[eid], s0, s1), {renderer: rOver, pane: 'over', color, weight: 5, opacity: 0.9, interactive: false}).addTo(isoLayer);
+      }
     }
   }
-  const reach = PL.map(([n, p]) => {
-    if (Math.hypot(...toXY(p.lon, p.lat).map((v, i) => v - toXY(...st.iso)[i])) < 30) return null;
-    const r = rev ? route([p.lon, p.lat], st.iso, k) : route(st.iso, [p.lon, p.lat], k); return r && [n, r.t];
-  }).filter(Boolean).sort((a, b) => a[1] - b[1]);
+  const reach = isoPlaces(st.iso, k, rev, document.getElementById('io').value || null);
   box.innerHTML = `${MODE_ZH[st.mode]} · ${PER_ZH[st.per]} · ${rev ? '到达圈（多久能到这里）' : '出发圈（从这里多久能到）'}<br>` +
     ISO.map((t, i) => `<span class="sw" style="background:${SEQ[2 - i]}"></span><b>${i ? ISO[i - 1] / 60 + '–' : '≤'}${t / 60} 分钟</b>（累计路网 ${fmt(km[i], 1)} km）：` +
       (reach.filter(r => r[1] <= t && (i === 0 || r[1] > ISO[i - 1])).map(r => `${esc(r[0])} ${fmt(r[1] / 60, 1)}′`).join('、') || '—')).join('<br>');
@@ -728,7 +762,7 @@ TABS.model = () => {
       <td>${Object.entries(M.classes).map(([k, v]) => `${esc(k)} ${fmt(v, 2)}`).join('，')}</td><td>${fmt(M.residual_mad, 3)}</td></tr>`; }).join('');
   return `${charts}
     <h3>模型参数</h3><table><tr><th>方式</th><th>平路基准</th><th>数据</th><th>高峰耗时倍数</th><th>道路类别效率（含先验）</th><th>残差 MAD</th></tr>${mt}</table>
-    <div class="small muted">跑步与步行共享坡度/道路效应（各自有配速项），与 DirMap foot 模型一致；骑行单独。高峰倍数 &gt;1 表示更慢。</div>
+    <div class="small muted">平路基准按每次出行等权汇总，长距离记录不会因观测更多而获得额外权重。跑步与步行共享坡度/道路效应（各自有配速项），与 DirMap foot 模型一致；骑行单独。高峰倍数 &gt;1 表示更慢。</div>
     <h3>验证</h3>${vt}<div class="small muted">去掉整条记录重拟合后预测它在实际路径上的移动耗时；误差主要来自每次出行本身的快慢（同一人骑行 3–6 m/s）。“前40%校准”用该记录前 40% 路程估计当天配速、只评估后 60%。</div>
     <h3>路线选择校验</h3><table><tr><th>通勤记录</th><th>时段</th><th>规划与实际重合</th><th>长度 规划 / 实际(路网) / GPS</th><th>模型估时 规划 / 实际路线</th><th>实测</th></tr>${ch}</table>
     <div class="small muted">用实测起终点重新规划；重合度低而“模型估时”接近说明存在几条差不多快的路线。实际路线估时只含匹配到路网的部分（广场、楼内等离网段不计入），实测含停留。</div>`;
@@ -839,7 +873,7 @@ if (location.protocol.startsWith('http')) fetch('status.json', {cache: 'no-store
   status.textContent = `已就绪 · 数据更新于 ${s.built_at}（${s.tracks} 条 DirMap 轨迹）`;
   if (s.error) status.innerHTML += `<br><span style="color:${css('--critical')}">✗ 最近一次重算失败（${esc(s.failed_at)}），显示的是上一版结果。</span>`;
 }).catch(() => {});
-window.__trackstudy = {route, placeRoute, routeVia, snap, tree, D, st, setRule, RULES: () => RULES, map: m, EDGES};
+window.__trackstudy = {route, placeRoute, routeVia, snap, tree, reachSegments, isoPlaces, D, st, setRule, RULES: () => RULES, map: m, EDGES};
 })();
 </script>
 </body>
