@@ -16,7 +16,7 @@ if ! cmp -s $REL/deploy/trackstudy.service /etc/systemd/system/trackstudy.servic
   sudo -n systemctl enable trackstudy.service >/dev/null 2>&1
 fi
 # nginx：照 /commute/ 的做法加到 DirMap 站点的 TLS server 块（DirMap 发布流程不改 nginx 配置）
-CONF=/etc/nginx/sites-available/dirmap.conf
+CONF=$(readlink -f /etc/nginx/sites-enabled/dirmap.conf)   # 生效的是 sites-enabled（当前为普通文件）
 if ! grep -q 'location /trackstudy/' $CONF; then
   sudo -n cp $CONF $R/dirmap.conf.bak.$STAMP
   python3 - "$CONF" > /tmp/dirmap.conf.new <<'PY'
