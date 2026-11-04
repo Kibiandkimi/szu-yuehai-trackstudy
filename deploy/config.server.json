@@ -9,5 +9,7 @@
   "builds_dir": "/opt/trackstudy/builds",
   "site_link": "/opt/trackstudy/site",
   "state_dir": "/opt/trackstudy/state",
-  "update_readme": false
+  "update_readme": false,
+  "rules_file": "/opt/trackstudy/rules.json",
+  "api_port": 8767
 }

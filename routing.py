@@ -12,7 +12,7 @@ from scipy.spatial import cKDTree
 from network import densify, lonlat_at, project
 from tracks import xy
 
-SNAP_K, SNAP_R, SNAP_SLACK, ACCESS_DETOUR = 3, 120.0, 25.0, 1.3
+SNAP_K, SNAP_R, SNAP_SLACK, ACCESS_DETOUR = 6, 120.0, 25.0, 1.3
 
 
 class Planner:
@@ -34,7 +34,7 @@ class Planner:
     def usable(self, e):
         return (e, '+') in self.cost or (e, '-') in self.cost
 
-    def snap(self, lon, lat):
+    def snap(self, lon, lat, k=SNAP_K):
         """附近最多 3 条不同路段上的投影：[(edge, s, 门到路距离)]。只保留比最近路段远不超过 25 m 的候选，
         门到路按直线 × 1.3 计步行（防止把“离网直线步行”当捷径）。"""
         px, py = xy(lon, lat)
@@ -45,7 +45,7 @@ class Planner:
                 best[e] = (s, d)
         if not best:
             raise ValueError(f'({lon},{lat}) 附近 {SNAP_R} m 内没有道路')
-        c = sorted(best.items(), key=lambda kv: kv[1][1])[:SNAP_K]
+        c = sorted(best.items(), key=lambda kv: kv[1][1])[:k]
         return [(e, s, d * ACCESS_DETOUR) for e, (s, d) in c if d <= c[0][1][1] + SNAP_SLACK]
 
     def _seeds(self, snaps, reverse=False):
@@ -125,6 +125,20 @@ class Planner:
             geo = (E['ll'] if d == '+' else E['ll'][::-1]) + geo
             u = prev
         return self._summary(c, arcs[::-1], geo, acc0 + acc_end)
+
+    def route_via(self, points):
+        """依次经过 points（[(lon, lat), ...]）的路线：逐段最快路线拼接。任一段不可达返回 None。"""
+        # 途经点只吸附最近一条路段，且到达与离开用同一投影——否则会在桥面/桥下等相邻路段之间“瞬移”
+        snaps = [self.snap(*p) if i in (0, len(points) - 1) else self.snap(*p, k=1) for i, p in enumerate(points)]
+        legs = [self.route(None, None, S=a, T=b) for a, b in zip(snaps, snaps[1:])]
+        if not legs or any(l is None for l in legs):
+            return None
+        out = dict(time_s=0.0, dist_m=0.0, net_m=0.0, ascent_m=0.0, descent_m=0.0, arcs=[], geo=[])
+        for l in legs:
+            for k in ('time_s', 'dist_m', 'net_m', 'ascent_m', 'descent_m'):
+                out[k] += l[k]
+            out['arcs'] += l['arcs']; out['geo'] += l['geo']
+        return out
 
     def reach(self, dist, limit, reverse=False):
         """一对多结果 → 各路段在 limit 秒内可达的长度（两端分别推进，合计不超过路段长）。

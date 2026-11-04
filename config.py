@@ -31,7 +31,11 @@ DEFAULTS = {
     'state_dir': str(ROOT / 'state'),
     'site_url': 'https://85.211.195.104/trackstudy/',
     'dirmap_url': 'https://85.211.195.104/#elevation',
-    'update_readme': True,      # 本地重算时刷新 README“主要结果”；服务器上关闭
+    'update_readme': True,
+    # 用户规则（封禁/推车/可骑行路段、自定义路线）；服务器上由网页编辑（需 admin_token）
+    'rules_file': str(DATA / 'rules.json'),
+    'admin_token': '',
+    'api_port': 8767,      # 本地重算时刷新 README“主要结果”；服务器上关闭
 }
 
 
@@ -48,7 +52,7 @@ def load():
     for env, k in (('TRACKSTUDY_SITE', 'site_dir'), ('TRACKSTUDY_OUT', 'out_dir')):
         if os.environ.get(env):
             cfg[k] = os.environ[env]
-    for k in ('dirmap_store', 'osm_reference', 'out_dir', 'site_dir', 'builds_dir', 'site_link', 'state_dir'):
+    for k in ('dirmap_store', 'osm_reference', 'out_dir', 'site_dir', 'builds_dir', 'site_link', 'state_dir', 'rules_file'):
         cfg[k] = os.path.expanduser(cfg[k])
     return cfg
 

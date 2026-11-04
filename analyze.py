@@ -122,27 +122,47 @@ def validate(rows, edges, commute):
     return out
 
 
-def edge_speeds(fits, bases, edges):
-    """sec_per_m[(mode, period)][(e, d)]"""
+def edge_speeds(fits, bases, edges, variant=None):
+    """sec_per_m[(mode, period)][(e, d)]。variant=None 用路段当前规则；'osm' 忽略规则；'push'/'ride' 假定骑行为该规则
+    （供网页端即时预览规则修改，与这里的计算一致）。"""
     sp = {}
     for mode, fam in MODES:
         f = fits[fam]
         for per in ('off', 'peak'):
-            sp[(mode, per)] = {(e['id'], d): math.exp(bases[mode] + f.road_log(e['id'], d, per == 'peak'))
-                               for e in edges for d in '+-'}
+            d_ = {}
+            for e in edges:
+                saved = e['rules']
+                if variant is not None:
+                    e['rules'] = {} if variant == 'osm' else {('bike', '+'): variant, ('bike', '-'): variant}
+                for d in '+-':
+                    d_[(e['id'], d)] = math.exp(bases[mode] + f.road_log(e['id'], d, per == 'peak'))
+                e['rules'] = saved
+            sp[(mode, per)] = d_
     return sp
 
 
 def allowed_for(mode):
+    """通行限制：OSM（禁止步行 / 骑行单行）+ 用户封禁规则。"""
     if mode == 'walk':
-        return lambda e, d: not e['foot_no']
-    return lambda e, d: not (e['oneway'] and d == '-')
+        return lambda e, d: not e['foot_no'] and e['rules'].get(('walk', d)) != 'block'
+    return lambda e, d: not (e['oneway'] and d == '-') and e['rules'].get(('bike', d)) != 'block'
 
 
 # ---------- 3. 规划分析 ----------
-def od_analysis(planners, P, edges):
-    """全地点 OD（双向、两种方式、平/高峰）。"""
-    names = list(P); od = []; geo = {}
+def custom_routes(rules, P):
+    """{(起点, 终点, 方式): [途经点]}；both=True 时反向用倒序途经点。"""
+    out = {}
+    for r in rules.get('routes', []):
+        if r['origin'] in P and r['dest'] in P:
+            out[(r['origin'], r['dest'], r['mode'])] = [tuple(v) for v in r['via']]
+            if r.get('both'):
+                out.setdefault((r['dest'], r['origin'], r['mode']), [tuple(v) for v in r['via']][::-1])
+    return out
+
+
+def od_analysis(planners, P, edges, rules):
+    """全地点 OD（双向、两种方式、平/高峰）。有用户自定义路线的 OD 按途经点逐段规划（custom=True）。"""
+    names = list(P); od = []; geo = {}; CR = custom_routes(rules, P)
     for (mode, per), pl in planners.items():
         snaps = {n: pl.snap(P[n]['lon'], P[n]['lat']) for n in names}
         for o in names:
@@ -150,14 +170,18 @@ def od_analysis(planners, P, edges):
             for d in names:
                 if d == o:
                     continue
-                r = pl.route(None, None, S=snaps[o], dist=dist, T=snaps[d])
+                via = CR.get((o, d, mode))
+                if via:
+                    r = pl.route_via([(P[o]['lon'], P[o]['lat']), *via, (P[d]['lon'], P[d]['lat'])])
+                else:
+                    r = pl.route(None, None, S=snaps[o], dist=dist, T=snaps[d])
                 if r is None:
                     continue
                 sup = sum(p for e, dd, p in r['arcs'] if (e, dd) in SUPPORT[mode]) / max(r['net_m'], 1)
                 od.append(dict(origin=o, dest=d, origin_group=P[o]['group'], dest_group=P[d]['group'], mode=mode, period=per,
                                time_min=round(r['time_s'] / 60, 2), dist_m=round(r['dist_m']), ascent_m=round(r['ascent_m'], 1),
                                descent_m=round(r['descent_m'], 1), avg_kmh=round(r['dist_m'] / r['time_s'] * 3.6, 1),
-                               data_coverage=round(sup, 2)))
+                               data_coverage=round(sup, 2), custom=bool(via)))
                 if per == 'off':
                     geo[(o, d, mode)] = [[round(a, 6), round(b, 6)] for a, b in r['geo']]
     return od, geo
@@ -219,6 +243,9 @@ def main():
     terrain = network.Terrain()
     print('地形：', f'DirMap {terrain.meta["name"]} {terrain.meta["schema"]}' if terrain.ok else '无 DirMap 地形（按平地；本地请运行 sync_dirmap.py）')
     edges = network.build_graph(terrain)
+    rules = network.load_rules()
+    missing = network.apply_rules(edges, rules)
+    print(f'用户规则：{len(rules["edges"])} 条路段规则，{len(rules["routes"])} 条自定义路线' + (f'；{len(missing)} 条找不到路段（OSM 参照已变）' if missing else ''))
     print(f'路网：{len(edges)} 段，{sum(e["len"] for e in edges)/1000:.1f} km；有地形高程 {sum(e["len"] for e in edges if e["h_known"])/1000:.1f} km')
     trs = []
     for tr in tracks_mod.load_tracks():
@@ -236,17 +263,18 @@ def main():
         SUPPORT[mode] = {(r['edge'], r['dir']) for r in rows if r['family'] == fam}
     print('通勤基准：', {m: f'{math.exp(-b):.2f} m/s' for m, b in bases.items()})
     for fam, f in fits.items():
-        print(f'  {fam}: 坡度系数 {np.round(f.theta, 2).tolist()}（先验 {f.prior.tolist()}），高峰 log 车行道 {f.beta['road']:+.3f} / 步行空间 {f.beta['ped']:+.3f}，'
+        print(f'  {fam}: 坡度系数 {np.round(f.theta, 2).tolist()}（先验 {f.prior.tolist()}），高峰步行空间 ×{math.exp(f.beta["ped"]):.2f}（{f.n_peak["ped"]} 观测），'
               f'类别 { {k: round(v, 3) for k, v in f.cls.items()} }，残差 MAD {f.residual_mad:.3f}')
     val = validate(rows, edges, commute)
     speeds = edge_speeds(fits, bases, edges)
+    variants = {v: edge_speeds(fits, bases, edges, v) for v in ('osm', 'push', 'ride')}
     walk_speed = 1 / math.exp(bases['walk'])
     planners = {k: Planner(edges, v, walk_speed, allowed_for(k[0])) for k, v in speeds.items()}
     P = places_mod.load()
     choice = route_choice(used, planners, speeds)
     for c in choice:
         print('  路线校验', c)
-    od, od_geo = od_analysis(planners, P, edges)
+    od, od_geo = od_analysis(planners, P, edges, rules)
     iso = isochrones(planners, P, od)
     from report import write_outputs
     write_outputs(dict(locals(), PEAK=PEAK, BREAKS=BREAKS))

@@ -19,18 +19,48 @@ const shots = path.join('/tmp', 'trackstudy-shots'); fs.mkdirSync(shots, { recur
     if (tag === 'desktop') {
       // JS 与 Python 规划一致（OD 表由 Python 计算）
       const diff = await page.evaluate(() => {
-        const { route, D } = window.__trackstudy, out = [];
+        const { placeRoute, D } = window.__trackstudy, out = [];
         const names = Object.keys(D.places);
         for (const r of D.od) {
           if (!['斋区', '汇文楼', '致理楼', '乔区'].includes(r.origin)) continue;
-          const a = D.places[r.origin], b = D.places[r.dest], js = route([a.lon, a.lat], [b.lon, b.lat], `${r.mode}_${r.period}`);
+          const js = placeRoute(r.origin, r.dest, `${r.mode}_${r.period}`);
           out.push(js ? Math.abs(js.t / 60 - r.time_min) / r.time_min : 1);
         }
-        return { n: out.length, max: Math.max(...out), bad: out.filter(x => x > 0.01).length };
+        return { n: out.length, custom: D.od.filter(r => r.custom).length, max: Math.max(...out), bad: out.filter(x => x > 0.01).length };
       });
       console.log('JS/Python OD 对比', diff);
       if (diff.bad) fails.push(`JS 与 Python 规划不一致：${diff.bad}/${diff.n}，最大 ${diff.max}`);
       await page.screenshot({ path: `${shots}/route.png` });
+      const rule = await page.evaluate(() => {
+        const T = window.__trackstudy, { D } = T;
+        const peakFaster = D.od.filter(r => r.period === 'peak' && r.time_min < D.od.find(q => q.origin === r.origin && q.dest === r.dest && q.mode === r.mode && q.period === 'off').time_min - 0.01).length;
+        const before = T.placeRoute('致理楼', '计软楼', 'bike_off'); const [e, d] = before.arcs[Math.floor(before.arcs.length / 2)];
+        T.setRule(e, 'bike', [0, 1], 'block');
+        const after = T.placeRoute('致理楼', '计软楼', 'bike_off');
+        const avoided = !after || !after.arcs.some(a => a[0] === e);
+        T.setRule(e, 'bike', [0, 1], 'none');
+        return { peakFaster, avoided, before: before.t, after: after && after.t, dirty: T.RULES().edges.length };
+      });
+      console.log('规则/高峰检查', rule);
+      if (rule.peakFaster) fails.push(`有 ${rule.peakFaster} 组 OD 高峰比平峰快`);
+      if (!rule.avoided || rule.after < rule.before) fails.push('封禁路段后路线没有绕开');
+      await page.evaluate(() => { document.querySelector('[name=tool][value=rules]').click(); });
+      // 真实点击：学生西路上一段 → 弹窗 → 禁行 → 出现保存栏 → 放弃
+      const pt = await page.evaluate(() => { const T = window.__trackstudy, e = T.EDGES.find(x => x.name === '学生西路' && x.len > 60);
+        const mid = e.ll[Math.floor(e.ll.length / 2)], ll = e.ll.length > 2 ? mid : [(e.ll[0][0] + e.ll[1][0]) / 2, (e.ll[0][1] + e.ll[1][1]) / 2];
+        T.map.setView(ll, 18, {animate: false}); const p = T.map.latLngToContainerPoint(ll); const r = T.map.getContainer().getBoundingClientRect(); return [p.x + r.left, p.y + r.top]; });
+      await page.waitForTimeout(300);
+      await page.mouse.click(pt[0], pt[1]);
+      await page.waitForSelector('.leaflet-popup [data-set=block]', { timeout: 3000 }).catch(() => fails.push('规则弹窗未出现'));
+      if (await page.$('.leaflet-popup [data-set=block]')) {
+        await page.screenshot({ path: `${shots}/rule-popup.png` });
+        await page.click('.leaflet-popup [data-set=block][data-dirs="0,1"]');
+        if (!(await page.isVisible('#savebar'))) fails.push('封禁后保存栏未出现');
+        await page.screenshot({ path: `${shots}/rules.png` });
+        await page.click('#rdiscard');
+        if (await page.isVisible('#savebar')) fails.push('放弃修改后保存栏仍在');
+      }
+      await page.evaluate(() => { document.querySelector('[name=tool][value=route]').click(); });
       for (const t of ['teach', 'dorm', 'od', 'iso', 'model', 'kml', 'about']) {
         await page.click(`[data-tab=${t}]`);
         const txt = await page.textContent('#dbody');

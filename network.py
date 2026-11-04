@@ -88,7 +88,7 @@ def build_graph(terrain=None):
         if t.get('oneway') == '-1':  # 统一成正向单行
             pts = pts[::-1]; x, y = x[::-1], y[::-1]
             incline = {'up': 'down', 'down': 'up'}.get(incline, incline)
-        edges.append(dict(id=len(edges), way=wid, hw=hw, name=t.get('name:zh', t.get('name', '')) if not link else '（拓扑补连）',
+        edges.append(dict(id=len(edges), key=edge_key(wid, pts), way=wid, hw=hw, name=t.get('name:zh', t.get('name', '')) if not link else '（拓扑补连）',
                           oneway=t.get('oneway') in ('yes', '-1', '1'), ll=[tuple(map(float, q)) for q in pts], x=x, y=y, len=max(L, 0.6),
                           a=key(pts[0]), b=key(pts[-1]), bridge=t.get('bridge', 'no') != 'no' or t.get('layer', '0') not in ('0', ''),
                           tunnel=t.get('tunnel', 'no') != 'no', incline=incline, covered=t.get('covered') == 'yes',
@@ -116,7 +116,42 @@ def build_graph(terrain=None):
                 continue
             add(0, {}, [k, keys[j]], link=True)
     attach_terrain(edges, terrain or Terrain())
+    for e in edges:
+        e.setdefault('rules', {})
     return edges
+
+
+def edge_key(wid, pts):
+    """跨重算稳定的路段标识：OSM way + 两端坐标（正向 = 绘制方向，oneway=-1 已翻转）。规则文件用它定位路段。"""
+    a, b = pts[0], pts[-1]
+    return f'{wid}:{a[0]:.7f},{a[1]:.7f}:{b[0]:.7f},{b[1]:.7f}'
+
+
+RULE_ACTIONS = {'bike': ('block', 'push', 'ride'), 'walk': ('block',)}
+
+
+def load_rules(path=None):
+    path = Path(path or config.load()['rules_file'])
+    if not path.is_file():
+        return dict(version=1, edges=[], routes=[])
+    r = json.loads(path.read_text(encoding='utf-8'))
+    r.setdefault('edges', []); r.setdefault('routes', [])
+    return r
+
+
+def apply_rules(edges, rules):
+    """e['rules'][(mode, dir)] = block / push / ride。找不到的规则（OSM 参照变了）返回列表供报告。"""
+    by = {e['key']: e for e in edges}
+    missing = []
+    for e in edges:
+        e['rules'] = {}
+    for r in rules.get('edges', []):
+        e = by.get(r['key'])
+        if e is None:
+            missing.append(r); continue
+        for d in ('+', '-') if r.get('dir', 'both') == 'both' else (r['dir'],):
+            e['rules'][(r['mode'], d)] = r['action']
+    return missing
 
 
 def attach_terrain(edges, terrain):
@@ -149,8 +184,12 @@ def attach_terrain(edges, terrain):
         e['grade'] = e['rise'] / e['len']
 
 
-def road_class(e, d):
-    """回归中的道路类别（同类共享先验效应）。台阶按上/下行分开。"""
+def road_class(e, d, family=None):
+    """回归中的道路类别（同类共享先验效应）。台阶按上/下行分开；骑行可被用户规则改成 ramp（可骑）/ push（推车）。"""
+    if family == 'bike':
+        act = e.get('rules', {}).get(('bike', d))
+        if act in ('ride', 'push'):
+            return 'ramp' if act == 'ride' else 'push'
     hw = e['hw']
     if hw == 'steps':
         return 'steps_' + (e['steps_dir'][d] or 'flat')

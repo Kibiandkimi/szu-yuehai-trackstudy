@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 import config
+import model
 import network
 import routing
 from map_view import render_map
@@ -45,10 +46,10 @@ def edge_table(L):
                 v_off = 1 / speeds[(mode, 'off')][(e['id'], d)]; v_pk = 1 / speeds[(mode, 'peak')][(e['id'], d)]
                 rise = e['rise'] if d == '+' else -e['rise']
                 out.append(dict(edge=e['id'], dir=d, mode=mode, name=e['name'] or e['hw'], highway=e['hw'],
-                                road_class=network.road_class(e, d), length_m=round(e['len'], 1), rise_m=round(rise, 2),
+                                road_class=network.road_class(e, d, fam), rule=e['rules'].get((mode, d), ''), length_m=round(e['len'], 1), rise_m=round(rise, 2),
                                 grade_pct=round(100 * rise / e['len'], 2), terrain=e['h_known'],
                                 speed_off_mps=round(v_off, 3), speed_peak_mps=round(v_pk, 3), s_per_100m=round(100 / v_off, 1),
-                                efficiency=round(v_off / flat, 3), grade_effect=round(math.exp(-float(e['F'][d] @ f.theta)) if not network.road_class(e, d).startswith('steps') else 1.0, 3),
+                                efficiency=round(v_off / flat, 3), grade_effect=round(math.exp(-float(e['F'][d] @ f.theta)) if not model.flat_class(network.road_class(e, d, fam)) else 1.0, 3),
                                 edge_effect=round(math.exp(-f.u.get(e['id'], 0) - f.v.get((e['id'], d), 0)), 3),
                                 support_tracks=len(sup), observed_m=round(o[0], 1) if o else 0, observed_s=round(o[1], 1) if o else 0,
                                 observed_mps=round(o[0] / o[1], 2) if o else None, observed_tracks=len(o[2]) if o else 0))
@@ -112,10 +113,16 @@ def map_data(L, public):
     for e in edges:
         E.append([node_ix[e['a']], node_ix[e['b']], round(e['len'], 2),
                   [c for p in e['ll'] for c in (round(p[0], 7), round(p[1], 7))],
-                  e['name'], e['hw'], round(e['rise'], 2), round(e['ascent'], 2), round(e['descent'], 2), int(e['h_known'])])
+                  e['name'], e['hw'], round(e['rise'], 2), round(e['ascent'], 2), round(e['descent'], 2), int(e['h_known']), e['key'],
+                  int(e['oneway']), int(e['foot_no'])])
+    # 网页端规划：原始弧代价（不含用户规则）+ 骑行“推车/可骑”两种代价；规则与 OSM 限制在网页端按同一逻辑叠加
     cost = {}
-    for (mode, per), pl in L['planners'].items():
-        cost[f'{mode}_{per}'] = [[_r(pl.cost.get((e['id'], d)), 2) for d in '+-'] for e in edges]
+    for (mode, per) in L['planners']:
+        V = L['variants']
+        cost[f'{mode}_{per}'] = [[round(e['len'] * V['osm'][(mode, per)][(e['id'], d)], 2) for d in '+-'] for e in edges]
+        if mode == 'bike':
+            for v in ('push', 'ride'):
+                cost[f'{mode}_{per}_{v}'] = [[round(e['len'] * V[v][(mode, per)][(e['id'], d)], 2) for d in '+-'] for e in edges]
     eff, support, observed = {}, {}, {}
     for mode, fam in (('walk', 'foot'), ('bike', 'bike')):
         f = fits[fam]
@@ -165,7 +172,7 @@ def map_data(L, public):
                   tracks=dict(walk=sum(u['label'] == 'walk' for u in L['used']), run=sum(u['label'] == 'run' for u in L['used']),
                               bike=sum(u['label'] == 'bike' for u in L['used'])),
                   peak=L['PEAK'], breaks=L['BREAKS'], dirmap_url=config.load()['dirmap_url'], site_url=config.load()['site_url'], walk_speed=round(L['walk_speed'], 4), snap=dict(k=routing.SNAP_K, r=routing.SNAP_R, slack=routing.SNAP_SLACK, detour=routing.ACCESS_DETOUR)),
-        nodes=[[k[0], k[1]] for k in node_ix], edges=E, cost=cost, eff=eff, support=support, observed=observed,
+        rules=L['rules'], nodes=[[k[0], k[1]] for k in node_ix], edges=E, cost=cost, eff=eff, support=support, observed=observed,
         places=P, od=L['od'], teaching=L['teaching'], iso=iso_rows, models=models, validation=val, choice=choice, tracks=used,
         observed_trips=[dict(o, file=tid(o['file'], o['mode'])) for o in L['obs_trips']],
         matched=None if public else {k: v for k, v in L['matched_geo'].items()})
@@ -236,9 +243,10 @@ def readme_results(L):
                  f"5 分钟节间只够近邻楼（致理↔致真 {t('致理楼', '致真楼', 'walk'):.1f} 分、致信↔计软 {t('致信楼', '计软楼', 'walk'):.1f} 分）。")
     lines.append('- **宿舍→教学楼（平峰，步行 / 骑行）**：' + '；'.join(
         f"{a}→{b} {t(a, b, 'walk'):.1f} / {t(a, b, 'bike'):.1f} 分" for a in ('斋区', '乔区', '南区') for b in ('汇文楼', '致理楼')))
-    pk = M['bike'].beta
-    lines.append(f"- **高峰（骑行）**：车行道耗时 ×{math.exp(pk['road']):.2f}、步道/天桥 ×{math.exp(pk['ped']):.2f}"
-                 f"（{M['bike'].n_peak['road'] + M['bike'].n_peak['ped']} 条高峰观测，支持弱）；步行 ×{math.exp(M['walk'].beta['road']):.2f} / ×{math.exp(M['walk'].beta['ped']):.2f}。")
+    lines.append(f"- **高峰**：只作用于步道/天桥/台阶（人流），骑行耗时 ×{math.exp(M['bike'].beta['ped']):.2f}（{M['bike'].n_peak['ped']} 条观测）、"
+                 f"步行 ×{math.exp(M['walk'].beta['ped']):.2f}（{M['walk'].n_peak['ped']} 条）；车行道不设高峰项——整段出行的快慢（赶课）与个人配速不可区分。")
+    if L['rules']['edges'] or L['rules']['routes']:
+        lines.append(f"- **用户规则**：{len(L['rules']['edges'])} 条路段规则（封禁/推车/可骑行）、{len(L['rules']['routes'])} 条自定义路线已用于规划。")
     lines.append(f"- **验证（留一记录，中位绝对误差）**：步行 常速 {med('walk', '常速（仅台阶先验）'):.1f}% / 完整模型 {med('walk', '完整模型'):.1f}%；"
                  f"骑行 常速 {med('bike', '常速（仅台阶先验）'):.1f}% / 完整模型 {med('bike', '完整模型'):.1f}% / 前 40% 校准 {med('bike', '完整模型·前40%校准'):.1f}%。"
                  "误差主要来自每次出行本身的快慢；样本少，完整模型未显著优于常速。")

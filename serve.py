@@ -2,8 +2,8 @@
 
     TRACKSTUDY_CONFIG=/opt/trackstudy/config.json python3 serve.py [--once]
 
-- 每 60 s 读输入指纹（DirMap tracks.json + models.json 内容哈希 + 代码版本）；变化后需稳定 120 s 再重算，
-  避免上传/改标签/地形重建过程中反复计算。
+- 每 60 s 读输入指纹（DirMap tracks.json + models.json + 用户规则的内容哈希 + 代码版本）；变化后需稳定 120 s 再重算，
+  避免上传/改标签/地形重建过程中反复计算。网页保存规则（api.py）后立即重算。
 - DirMap 的识别、配准、地形重建在同一台 892 MB 机器上运行：负载 >1.5 或可用内存 <250 MB 时推迟（最多 30 分钟）。
 - 在 builds/<时间> 中构建，成功后原子切换 site → builds/<时间>，保留最近 3 份；失败保留旧站点，错误写进 state/status.json，
   页面读取同目录 status.json 显示数据时间与最近一次失败。
@@ -17,6 +17,9 @@ import sys
 import time
 from pathlib import Path
 
+import threading
+
+import api
 import config
 import dirmap_store
 
@@ -81,22 +84,33 @@ def build(cfg, fp):
     return st
 
 
+def fingerprint(cfg):
+    import hashlib
+    p = Path(cfg['rules_file'])
+    rules = hashlib.sha256(p.read_bytes()).hexdigest()[:8] if p.is_file() else '-'
+    return f'{dirmap_store.fingerprint()}-{rules}-{code_version()}'
+
+
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--once', action='store_true', help='若输入变化立即重算一次后退出')
     args = ap.parse_args()
     cfg = config.load()
+    kick = threading.Event()
+    if not args.once and cfg.get('admin_token'):
+        api.start(cfg, kick, lambda: read_status(cfg))
     seen, since, deferred = None, time.time(), None
     while True:
         try:
-            fp = f'{dirmap_store.fingerprint()}-{code_version()}'
+            fp = fingerprint(cfg)
             st = read_status(cfg)
             if fp != seen:
                 seen, since = fp, time.time()
-            due = fp != st.get('input') and (args.once or time.time() - since >= SETTLE)
+            urgent = args.once or kick.is_set()
+            due = fp != st.get('input') and (urgent or time.time() - since >= SETTLE)
             if due:
                 hot, why = busy()
                 deferred = deferred or time.time()
-                if hot and not args.once and time.time() - deferred < MAX_DEFER:
+                if hot and not urgent and time.time() - deferred < MAX_DEFER:
                     print('推迟重算：', why, flush=True)
                 else:
                     print('重算', fp, flush=True)
@@ -106,11 +120,12 @@ def main():
                         st = dict(st, input=fp, error=str(e)[-1500:], failed_at=bj())
                         print('失败', e, flush=True)
                     write_status(cfg, st); deferred = None
+            kick.clear()
             if args.once:
                 return
         except Exception as e:   # 读 DirMap 文件时的瞬时错误：下一轮再试
             print('轮询出错：', e, flush=True)
-        time.sleep(POLL)
+        kick.wait(POLL)
 
 
 if __name__ == '__main__':

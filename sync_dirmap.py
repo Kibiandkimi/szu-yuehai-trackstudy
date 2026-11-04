@@ -10,6 +10,8 @@ import os
 import subprocess
 import sys
 
+from pathlib import Path
+
 import config
 
 
@@ -41,6 +43,10 @@ def main():
         subprocess.run(['tar', 'x', '-C', str(dst)], input=tar, check=True)
     for name, obj in (('tracks.json', tracks), ('models.json', models)):   # 最后写索引，镜像始终自洽
         (dst / name).write_text(json.dumps(obj, ensure_ascii=False), encoding='utf-8')
+    rules = subprocess.run(ssh + ['cat', '/opt/trackstudy/rules.json'], capture_output=True, timeout=60)
+    if rules.returncode == 0 and rules.stdout:   # 服务器上的规则为准（网页编辑）
+        p = Path(cfg['rules_file']); p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(rules.stdout)
+        print('已同步服务器规则 →', p)
     print(f'镜像完成：{len(want)} 条轨迹（新增 {len([f for f in files if f.startswith("tracks/")])}），'
           f'地形 {region["name"] if region else "无"}（sourceVersion {models.get("sourceVersion")}）→ {dst}')
 

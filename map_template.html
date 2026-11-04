@@ -86,12 +86,21 @@ td.st { text-align: left; }
   <div class="row"><b>工具</b>
     <label><input type="radio" name="tool" value="view">查看路段</label>
     <label><input type="radio" name="tool" value="route" checked>双向路线</label>
-    <label><input type="radio" name="tool" value="iso">可达圈</label></div>
+    <label><input type="radio" name="tool" value="iso">可达圈</label>
+    <label><input type="radio" name="tool" value="rules">封禁/规则</label></div>
   <div id="tool-route">
     <div class="row"><select id="ra"></select>⇄<select id="rb"></select><button class="act" id="rswap" title="交换起终点">↔</button></div>
     <div class="hint small">在地图上点两下设置 A、B，或从列表选地点。</div>
     <div id="rres" class="res small" role="status">选择起终点后显示 A→B 与 B→A。</div>
+    <div id="rcustom" class="small"></div>
   </div>
+  <div id="tool-rules" hidden>
+    <div class="hint small">点路段设置<b>当前方式</b>的规则（可只作用于一个方向）：禁行；推车 = 必须下车推行；可骑 = OSM 标为台阶/人行天桥但实际能骑。
+      自定义整条路线：在“双向路线”里选两个地点后点“按途经点自定义”。</div>
+    <div class="lg small" id="rlg"></div>
+    <div id="rlist" class="small"></div>
+  </div>
+  <div id="savebar" class="res small" hidden></div>
   <div id="tool-iso" hidden>
     <div class="row"><select id="io"></select>
       <label><input type="radio" name="idir" value="out" checked>出发圈</label><label><input type="radio" name="idir" value="in">到达圈</label></div>
@@ -132,14 +141,15 @@ const toXY = (lon, lat) => [(lon - LON0) * KX, (lat - LAT0) * KY];
 
 // ---------- 路段几何 ----------
 const EDGES = D.edges.map((r, id) => {
-  const [a, b, len, flat, name, hw, rise, ascent, descent, hk] = r;
+  const [a, b, len, flat, name, hw, rise, ascent, descent, hk, key, oneway, footNo] = r;
   const ll = [], xs = [], ys = [];
   for (let i = 0; i < flat.length; i += 2) { ll.push([flat[i + 1], flat[i]]); const p = toXY(flat[i], flat[i + 1]); xs.push(p[0]); ys.push(p[1]); }
   const cs = [0]; for (let i = 1; i < xs.length; i++) cs.push(cs[i - 1] + Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]));
   const sc = len / Math.max(cs[cs.length - 1], 1e-9);
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   xs.forEach((x, i) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, ys[i]); y1 = Math.max(y1, ys[i]); });
-  return {id, a, b, len, ll, xs, ys, cs: cs.map(c => c * sc), name, hw, rise, ascent, descent, hk: !!hk, box: [x0, x1, y0, y1]};
+  return {id, a, b, len, ll, xs, ys, cs: cs.map(c => c * sc), name, hw, rise, ascent, descent, hk: !!hk, box: [x0, x1, y0, y1],
+          key, oneway: !!oneway, footNo: !!footNo};
 });
 function project(e, px, py) {   // 与 network.project 相同
   let best = [0, Infinity];
@@ -161,11 +171,38 @@ function sub(e, s0, s1) {   // 路段上 s0→s1 的子线（LatLng）
   return s0 <= s1 ? out : out.reverse();
 }
 
+// ---------- 用户规则（与 network.apply_rules / analyze.allowed_for 相同） ----------
+const clone = o => JSON.parse(JSON.stringify(o));
+const BY_KEY = new Map(EDGES.map(e => [e.key, e.id]));
+let RULES = clone(D.rules || {edges: [], routes: []}), SAVED = clone(RULES), RULE_VER = 0;
+let RM = null;   // {walk|bike: Map(eid → [正向动作, 反向动作])}
+function ruleMaps() {
+  if (RM && RM.ver === RULE_VER) return RM;
+  RM = {ver: RULE_VER, walk: new Map(), bike: new Map()};
+  for (const r of RULES.edges) {
+    const eid = BY_KEY.get(r.key); if (eid == null) continue;
+    const cur = RM[r.mode].get(eid) || [null, null];
+    if (r.dir !== '-') cur[0] = r.action; if (r.dir !== '+') cur[1] = r.action;
+    RM[r.mode].set(eid, cur);
+  }
+  return RM;
+}
+const ruleOf = (mode, eid, d) => (ruleMaps()[mode].get(eid) || [null, null])[d];
+function arcCost(key, eid, d) {
+  const mode = key.split('_')[0], e = EDGES[eid], act = ruleOf(mode, eid, d);
+  if (mode === 'walk' && e.footNo) return null;
+  if (mode === 'bike' && e.oneway && d === 1) return null;
+  if (act === 'block') return null;
+  if (mode === 'bike' && (act === 'push' || act === 'ride')) return D.cost[`${key}_${act}`][eid][d];
+  return D.cost[key][eid][d];
+}
+function rulesChanged() { RULE_VER++; for (const k in GRAPH) delete GRAPH[k]; }
+
 // ---------- 有向图与规划（与 routing.Planner 相同） ----------
 const GRAPH = {};
 function graph(key) {
   if (GRAPH[key]) return GRAPH[key];
-  const C = D.cost[key], out = new Map(), inc = new Map();
+  const C = EDGES.map(e => [arcCost(key, e.id, 0), arcCost(key, e.id, 1)]), out = new Map(), inc = new Map();
   const push = (m, k, v) => { if (!m.has(k)) m.set(k, []); m.get(k).push(v); };
   EDGES.forEach(e => {
     if (C[e.id][0] != null) { push(out, e.a, [e.b, C[e.id][0], e.id, 0]); push(inc, e.b, [e.a, C[e.id][0], e.id, 0]); }
@@ -174,14 +211,14 @@ function graph(key) {
   return GRAPH[key] = {C, out, inc};
 }
 const WALK = D.meta.walk_speed, SNAP_R = D.meta.snap.r, SNAP_K = D.meta.snap.k;
-function snap(lon, lat, key) {
-  const C = D.cost[key], [px, py] = toXY(lon, lat), c = [];
+function snap(lon, lat, key, k = SNAP_K) {
+  const C = graph(key).C, [px, py] = toXY(lon, lat), c = [];
   for (const e of EDGES) {
     if (C[e.id][0] == null && C[e.id][1] == null) continue;
     if (px < e.box[0] - SNAP_R || px > e.box[1] + SNAP_R || py < e.box[2] - SNAP_R || py > e.box[3] + SNAP_R) continue;
     const [s, d] = project(e, px, py); if (d <= SNAP_R) c.push([e.id, s, d]);
   }
-  c.sort((p, q) => p[2] - q[2]); const near = c.slice(0, SNAP_K);   // 与 routing.Planner.snap 相同
+  c.sort((p, q) => p[2] - q[2]); const near = c.slice(0, k);   // 与 routing.Planner.snap 相同
   return near.filter(p => p[2] <= near[0][2] + D.meta.snap.slack).map(([e, s, d]) => [e, s, d * D.meta.snap.detour]);
 }
 class Heap { constructor() { this.a = []; }
@@ -206,8 +243,8 @@ function tree(snaps, key, reverse = false, limit = Infinity) {
   }
   return dist;
 }
-function route(src, dst, key) {
-  const G = graph(key), S = snap(src[0], src[1], key), T = snap(dst[0], dst[1], key);
+function routeSnaps(S, T, key) {
+  const G = graph(key);
   if (!S.length || !T.length) return null;
   const dist = tree(S, key); let best = null;
   for (const [eid, s, acc] of T) {
@@ -236,19 +273,51 @@ function route(src, dst, key) {
         geo = sub(E0, s0, d0 === 0 ? E0.len : 0).concat(geo); acc += a0; break; }
       const [e1, d1] = via, E1 = EDGES[e1]; arcs.push([e1, d1, E1.len]); geo = (d1 === 0 ? E1.ll : E1.ll.slice().reverse()).concat(geo); u = prev;
     }
+    arcs.reverse();
   }
   let up = 0, down = 0, net = 0;
   arcs.forEach(([e, d, p]) => { const E = EDGES[e], f = p / E.len; net += p; up += (d === 0 ? E.ascent : E.descent) * f; down += (d === 0 ? E.descent : E.ascent) * f; });
   const sup = arcs.reduce((s, [e, d, p]) => s + (D.support[key.split('_')[0]][e][d] > 0 ? p : 0), 0);
-  return {t: best.t, dist: net + acc, net, up, down, geo, arcs, cover: net ? sup / net : 0};
+  return {t: best.t, dist: net + acc, net, up, down, geo, arcs, sup};
+}
+function route(src, dst, key) {
+  const r = routeSnaps(snap(src[0], src[1], key), snap(dst[0], dst[1], key), key);
+  return r && Object.assign(r, {cover: r.net ? r.sup / r.net : 0});
+}
+// 依次经过途经点（与 routing.Planner.route_via 相同：途经点只吸附最近一条路段，到达与离开同一投影）
+function routeVia(points, key) {
+  const snaps = points.map((p, i) => snap(p[0], p[1], key, i === 0 || i === points.length - 1 ? SNAP_K : 1));
+  const out = {t: 0, dist: 0, net: 0, up: 0, down: 0, geo: [], arcs: [], sup: 0, via: points.slice(1, -1)};
+  for (let i = 0; i < snaps.length - 1; i++) {
+    const r = routeSnaps(snaps[i], snaps[i + 1], key); if (!r) return null;
+    for (const k of ['t', 'dist', 'net', 'up', 'down', 'sup']) out[k] += r[k];
+    out.geo = out.geo.concat(r.geo); out.arcs = out.arcs.concat(r.arcs);
+  }
+  out.cover = out.net ? out.sup / out.net : 0;
+  return out;
+}
+function customFor(o, d, mode) {
+  for (const r of RULES.routes) {
+    if (r.mode !== mode) continue;
+    if (r.origin === o && r.dest === d) return {r, via: r.via};
+    if (r.both && r.origin === d && r.dest === o) return {r, via: r.via.slice().reverse()};
+  }
+  return null;
+}
+// 地点之间的路线：有自定义路线按途经点，否则最快
+function placeRoute(o, d, key) {
+  const a = D.places[o], b = D.places[d], c = customFor(o, d, key.split('_')[0]);
+  if (!c) return route([a.lon, a.lat], [b.lon, b.lat], key);
+  const r = routeVia([[a.lon, a.lat], ...c.via, [b.lon, b.lat]], key);
+  return r && Object.assign(r, {custom: c.r});
 }
 
 // ---------- 地图 ----------
 const m = L.map('m', {maxZoom: 19, zoomSnap: 0.5}).setView([22.5352, 113.9325], 16);
 m.attributionControl.addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · 地形：DirMap 共享轨迹高程');
 L.control.scale({imperial: false}).addTo(m);
-m.createPane('base').style.zIndex = 190; m.createPane('net').style.zIndex = 300; m.createPane('over').style.zIndex = 420; m.createPane('top').style.zIndex = 460;
-const rBase = L.canvas({pane: 'base'}), rNet = L.canvas({pane: 'net', tolerance: 5}), rOver = L.canvas({pane: 'over'}), rTop = L.canvas({pane: 'top'});
+m.createPane('base').style.zIndex = 190; m.createPane('net').style.zIndex = 300; m.createPane('over').style.zIndex = 420; m.createPane('top').style.zIndex = 460; m.createPane('hit').style.zIndex = 470;
+const rBase = L.canvas({pane: 'base'}), rNet = L.canvas({pane: 'net', tolerance: 5}), rOver = L.canvas({pane: 'over'}), rTop = L.canvas({pane: 'top'}), rHit = L.canvas({pane: 'hit', tolerance: 4});
 L.geoJSON(D.basemap, {pane: 'base', renderer: rBase, interactive: false, style: f => {
   const k = f.properties.kind;
   if (k === 'water') return {color: css('--water'), weight: 1, fillColor: css('--water'), fillOpacity: 1};
@@ -264,26 +333,31 @@ for (const [name, p] of Object.entries(D.places)) {
     .addTo(placeLayer).bindTooltip(esc(name), {permanent: true, direction: 'right', className: 'place', offset: [4, 0]});
 }
 
-// 颜色：效率 = 发散（红慢 – 灰 – 蓝快）；支持 / 可达圈 = 蓝色序数
-const DIV = ['#b8312f', '#e8807e', '#a9a8a1', '#6da7ec', '#184f95'];
+// 颜色：效率 5 档（红慢 · 琥珀 · 青绿一般 · 蓝 · 紫快），相邻档已用 dataviz 校验（色盲 ΔE ≥ 9，正常视力 ≥ 16），
+// 不用灰色——底图道路是灰的，灰色“一般”路段会看不见。支持 / 可达圈 = 蓝色序数。
+const EFF = ['#b8312f', '#eda100', '#1baf7a', '#2a78d6', '#4a3aa7'];
 const effBin = r => r < 0.8 ? 0 : r < 0.93 ? 1 : r <= 1.07 ? 2 : r <= 1.25 ? 3 : 4;
-const EFF_LBL = ['<0.8 慢', '0.8–0.93', '0.93–1.07', '1.07–1.25', '>1.25 快'];
+const EFF_LBL = ['<0.8 慢', '0.8–0.93 较慢', '0.93–1.07 一般', '1.07–1.25 较快', '>1.25 快'];
+const RULE_STYLE = {block: {c: '#0b0b0b', t: '禁行'}, push: {c: '#e87ba4', t: '推车'}, ride: {c: '#008300', t: '可骑'}};
 const SEQ = ['#86b6ef', '#3987e5', '#184f95'];
 const BEAR = ['东', '东北', '北', '西北', '西', '西南', '南', '东南'];
 const bearing = (e, d) => { const i0 = d ? e.xs.length - 1 : 0, i1 = d ? 0 : e.xs.length - 1;
   const ang = Math.atan2(e.ys[i1] - e.ys[i0], e.xs[i1] - e.xs[i0]); return '向' + BEAR[((Math.round(ang / (Math.PI / 4)) % 8) + 8) % 8]; };
 
-const st = {mode: 'bike', per: 'off', layer: 'eff', tool: 'route', A: null, B: null, iso: null, idir: 'out', prior: false};
+const st = {mode: 'bike', per: 'off', layer: 'eff', tool: 'route', A: null, B: null, An: '斋区', Bn: '汇文楼', iso: null, idir: 'out', prior: false,
+            editVia: null};   // editVia = {o, d, mode, via: [], both} 正在编辑的自定义路线
 const key = () => `${st.mode}_${st.per}`;
+const ruleLayer = L.layerGroup().addTo(m), hitLayer = L.layerGroup();
 const over = L.layerGroup().addTo(m), routeLayer = L.layerGroup().addTo(m), isoLayer = L.layerGroup().addTo(m), kmlLayer = L.layerGroup().addTo(m);
 
 function edgePopup(e) {
-  const md = st.mode, k = key(), C = D.cost[k][e.id], ob = D.observed[md];
+  const md = st.mode, k = key(), C = graph(k).C[e.id], ob = D.observed[md];
   const rows = [0, 1].map(d => {
-    if (C[d] == null) return `<tr><td>${bearing(e, d)}</td><td colspan="4">${md === 'bike' ? '单行，不可逆行' : '不可通行'}</td></tr>`;
+    const act = ruleOf(md, e.id, d);
+    if (C[d] == null) return `<tr><td>${bearing(e, d)}</td><td colspan="4">${act === 'block' ? '已封禁（用户规则）' : md === 'bike' ? '单行，不可逆行' : '不可通行'}</td></tr>`;
     const v = e.len / C[d], o = ob[`${e.id}${d ? '-' : '+'}`], rise = d ? -e.rise : e.rise;
     return `<tr><td>${bearing(e, d)}</td><td>${fmt(v, 2)} m/s</td><td>${fmt(C[d], 0)} s</td><td>${fmt(100 * rise / e.len, 1)}%</td>` +
-           `<td>${D.support[md][e.id][d]} 条${o ? `，实测 ${fmt(o[0] / o[1], 2)} m/s` : ''}</td></tr>`;
+           `<td>${D.support[md][e.id][d]} 条${o ? `，实测 ${fmt(o[0] / o[1], 2)} m/s` : ''}${act ? `，规则：${RULE_STYLE[act].t}` : ''}</td></tr>`;
   }).join('');
   return `<b>${esc(e.name || e.hw)}</b> <span class="muted">${esc(e.hw)} · ${fmt(e.len, 0)} m${e.hk ? '' : ' · 无地形'}</span>
     <table class="small"><tr><th>方向</th><th>${MODE_ZH[md]}速度</th><th>耗时</th><th>坡度</th><th>轨迹支持</th></tr>${rows}</table>
@@ -291,8 +365,9 @@ function edgePopup(e) {
 }
 function drawOver() {
   over.clearLayers();
-  const md = st.mode, E = D.eff[md], S = D.support[md], k = key(), C = D.cost[k];
+  const md = st.mode, E = D.eff[md], S = D.support[md], k = key(), C = graph(k).C;
   const lg = document.getElementById('lg');
+  drawRules();
   if (st.layer === 'none') { lg.innerHTML = ''; return; }
   for (const e of EDGES) {
     if (C[e.id][0] == null && C[e.id][1] == null) continue;
@@ -301,24 +376,115 @@ function drawOver() {
     if (!show) continue;
     if (st.layer === 'eff') {
       const vals = E[e.id].filter((_, d) => C[e.id][d] != null); const g = Math.exp(vals.reduce((s, v) => s + Math.log(v), 0) / vals.length);
-      color = DIV[effBin(g)]; w = sup ? 3 + Math.min(sup, 6) * 0.6 : 1.5;
+      color = EFF[effBin(g)]; w = sup ? 3 + Math.min(sup, 6) * 0.6 : 2;
     } else if (st.layer === 'slope') {
       if (C[e.id][0] == null || C[e.id][1] == null) continue;
       const r = C[e.id][0] / C[e.id][1];  // 正向/反向耗时
-      const a = Math.abs(Math.log(r)); if (a < 0.03) { color = DIV[2]; w = 2; } else { color = a < 0.1 ? DIV[1] : DIV[0]; w = a < 0.1 ? 3 : 4.5;
-        // 箭头指向耗时更长（上坡）的方向
-        if (e.len >= 25) arrow(e, e.len / 2, r > 1 ? 0 : 1, color); }
+      const a = Math.abs(Math.log(r)); if (a < 0.03) continue;   // 两个方向差 <3% 不画
+      color = a < 0.1 ? EFF[1] : EFF[0]; w = a < 0.1 ? 3 : 4.5;
+      if (e.len >= 25) arrow(e, e.len / 2, r > 1 ? 0 : 1, color);   // 箭头指向耗时更长（上坡）的方向
     } else {
       if (!sup) continue; color = SEQ[sup >= 4 ? 2 : sup >= 2 ? 1 : 0]; w = 3 + Math.min(sup, 6) * 0.6;
     }
-    L.polyline(e.ll, {renderer: rNet, pane: 'net', color, weight: w, opacity: 0.95}).addTo(over)
-      .on('click', ev => { if (st.tool === 'view') { L.DomEvent.stopPropagation(ev); L.popup({maxWidth: 380}).setLatLng(ev.latlng).setContent(edgePopup(e)).openOn(m); } });
+    L.polyline(e.ll, {renderer: rNet, pane: 'net', color, weight: w, opacity: 0.95, interactive: false}).addTo(over);
   }
-  if (st.layer === 'eff') lg.innerHTML = `相对效率（${MODE_ZH[md]}，同一人平路 = 1）<br>` + EFF_LBL.map((t, i) => `<span><i style="background:${DIV[i]}"></i>${t}</span>`).join('') +
+  if (st.layer === 'eff') lg.innerHTML = `相对效率（${MODE_ZH[md]}，同一人平路 = 1）<br>` + EFF_LBL.map((t, i) => `<span><i style="background:${EFF[i]}"></i>${t}</span>`).join('') +
     `<br><span class="muted">线宽 = 轨迹支持${st.prior ? '；细线 = 无轨迹，仅按坡度+道路类别先验' : ''}。</span>`;
-  else if (st.layer === 'slope') lg.innerHTML = `两个方向耗时差（${MODE_ZH[md]}）：<span><i style="background:${DIV[2]}"></i>&lt;3%</span><span><i style="background:${DIV[1]}"></i>3–10%</span><span><i style="background:${DIV[0]}"></i>&gt;10%</span><br><span class="muted">箭头指向较慢（上坡）方向。</span>`;
+  else if (st.layer === 'slope') lg.innerHTML = `两个方向耗时差（${MODE_ZH[md]}）：<span><i style="background:${EFF[1]}"></i>3–10%</span><span><i style="background:${EFF[0]}"></i>&gt;10%</span><br><span class="muted">箭头指向较慢（上坡）方向；差 &lt;3% 的路段不画。</span>`;
   else lg.innerHTML = '经过该路段的独立轨迹数（同方式族）：' + ['1', '2–3', '≥4'].map((t, i) => `<span><i style="background:${SEQ[i]}"></i>${t}</span>`).join('');
 }
+function drawRules() {
+  ruleLayer.clearLayers();
+  const md = st.mode, M = ruleMaps()[md];
+  for (const [eid, acts] of M) {
+    const e = EDGES[eid];
+    for (const act of new Set(acts.filter(Boolean))) {
+      const c = RULE_STYLE[act].c, dirs = [0, 1].filter(d => acts[d] === act);
+      L.polyline(e.ll, {renderer: rTop, pane: 'top', color: css('--surface-1'), weight: 9, opacity: 0.9, interactive: false}).addTo(ruleLayer);
+      L.polyline(e.ll, {renderer: rTop, pane: 'top', color: c, weight: 5, interactive: false, dashArray: act === 'block' ? '6 5' : null}).addTo(ruleLayer);
+      if (dirs.length === 1 && e.len >= 12) arrowTo(ruleLayer, e, e.len / 2, dirs[0], c);
+    }
+  }
+  document.getElementById('rlg').innerHTML = `${MODE_ZH[md]}规则：` + Object.entries(RULE_STYLE).filter(([k]) => md === 'bike' || k === 'block')
+    .map(([, v]) => `<span><i style="background:${v.c}"></i>${v.t}</span>`).join('') + '<span class="muted">箭头 = 仅该方向</span>';
+  const list = RULES.edges.filter(r => r.mode === md);
+  document.getElementById('rlist').innerHTML = list.length ? `<table>${list.map(r => { const eid = BY_KEY.get(r.key), e = EDGES[eid];
+      return `<tr><td>${esc(r.name || (e && (e.name || e.hw)) || '（路段已不存在）')}</td><td>${RULE_STYLE[r.action].t}</td><td>${r.dir === 'both' ? '双向' : e ? bearing(e, r.dir === '+' ? 0 : 1) : r.dir}</td>
+      <td><a href="#" data-zoom="${eid ?? ''}">定位</a> <a href="#" data-del="${esc(r.key)}|${r.dir}">删除</a></td></tr>`; }).join('')}</table>` : '<span class="muted">当前方式还没有路段规则。</span>';
+  document.querySelectorAll('#rlist [data-zoom]').forEach(a => a.onclick = ev => { ev.preventDefault(); const e = EDGES[+a.dataset.zoom]; if (e) m.fitBounds(L.latLngBounds(e.ll).pad(1.5)); });
+  document.querySelectorAll('#rlist [data-del]').forEach(a => a.onclick = ev => { ev.preventDefault(); const [k, d] = a.dataset.del.split('|');
+    RULES.edges = RULES.edges.filter(r => !(r.key === k && r.mode === md && r.dir === d)); touched(); });
+}
+// 设置路段规则：先展开成两个方向，再合并回 both / 单方向条目
+function setRule(eid, mode, dirs, action) {
+  const e = EDGES[eid], acts = [ruleOf(mode, eid, 0), ruleOf(mode, eid, 1)];
+  dirs.forEach(d => acts[d] = action === 'none' ? null : action);
+  RULES.edges = RULES.edges.filter(r => !(r.key === e.key && r.mode === mode));
+  const base = {key: e.key, mode, name: e.name || e.hw};
+  if (acts[0] && acts[0] === acts[1]) RULES.edges.push({...base, dir: 'both', action: acts[0]});
+  else [0, 1].forEach(d => acts[d] && RULES.edges.push({...base, dir: d ? '-' : '+', action: acts[d]}));
+  touched();
+}
+function rulePopup(e) {
+  const md = st.mode, acts = md === 'bike' ? ['none', 'block', 'push', 'ride'] : ['none', 'block'];
+  const zh = {none: '正常', ...Object.fromEntries(Object.entries(RULE_STYLE).map(([k, v]) => [k, v.t]))};
+  const cur = d => ruleOf(md, e.id, d) || 'none';
+  const btns = dirs => acts.map(a => `<button class="act" data-set="${a}" data-dirs="${dirs}" ${dirs.split(',').every(d => cur(+d) === a) ? 'style="font-weight:700;border-color:currentColor"' : ''}>${zh[a]}</button>`).join(' ');
+  return `<b>${esc(e.name || e.hw)}</b> <span class="muted">${esc(e.hw)} · ${fmt(e.len, 0)} m</span><br><b>${MODE_ZH[md]}</b>规则
+    <table class="small"><tr><td>双向</td><td>${btns('0,1')}</td></tr><tr><td>${bearing(e, 0)}</td><td>${btns('0')}</td></tr><tr><td>${bearing(e, 1)}</td><td>${btns('1')}</td></tr></table>
+    <div class="muted small">${md === 'bike' ? '可骑：OSM 标为台阶/人行天桥但实际能骑（按步道速度计）；推车：约 1 m/s。' : ''}修改后记得点面板下方“保存到服务器”。</div>`;
+}
+EDGES.forEach(e => L.polyline(e.ll, {renderer: rHit, pane: 'net', color: '#000', opacity: 0, weight: 12}).addTo(hitLayer).on('click', ev => {
+  L.DomEvent.stopPropagation(ev);
+  const pop = L.popup({maxWidth: 420}).setLatLng(ev.latlng).setContent(st.tool === 'rules' ? rulePopup(e) : edgePopup(e)).openOn(m);
+  if (st.tool === 'rules') pop.getElement().querySelectorAll('[data-set]').forEach(b => b.onclick = () => {
+    setRule(e.id, st.mode, b.dataset.dirs.split(',').map(Number), b.dataset.set); pop.setContent(rulePopup(e)); m.closePopup(); });
+}));
+function arrowTo(layer, e, s, d, color) {
+  const [x0, y0] = ptXY(e, d ? s + 3 : s - 3), [x1, y1] = ptXY(e, d ? s - 3 : s + 3), ang = Math.atan2(y1 - y0, x1 - x0), L6 = 7;
+  const wing = a => toLL(x1 - L6 * Math.cos(ang + a), y1 - L6 * Math.sin(ang + a));
+  L.polyline([wing(0.55), toLL(x1, y1), wing(-0.55)], {renderer: rTop, pane: 'top', color, weight: 3, interactive: false}).addTo(layer);
+}
+
+// ---------- 保存规则 ----------
+const API = location.protocol.startsWith('http') ? new URL('api/', location.href).href : null;
+const dirty = () => JSON.stringify({e: RULES.edges, r: RULES.routes}) !== JSON.stringify({e: SAVED.edges, r: SAVED.routes});
+function touched() { rulesChanged(); drawOver(); setTool(); renderTab(); saveBar(); }
+function saveBar(msg) {
+  const bar = document.getElementById('savebar');
+  if (!dirty() && !msg) { bar.hidden = true; return; }
+  bar.hidden = false;
+  bar.innerHTML = (msg || `<b>规则有未保存的修改</b>（地图与路线已按新规则预览；表格在服务器重算后更新）`) + '<br>' +
+    (dirty() ? (API ? '<button class="act" id="rsave">保存到服务器</button> ' : '<span class="muted">离线文件无法保存，</span>') +
+      '<button class="act" id="rdiscard">放弃修改</button> <button class="act" id="rexport">导出 JSON</button>' : '');
+  const on = (id, f) => { const b = document.getElementById(id); if (b) b.onclick = f; };
+  on('rdiscard', () => { RULES = clone(SAVED); touched(); });
+  on('rexport', () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(RULES, null, 1)], {type: 'application/json'}));
+    a.download = 'trackstudy-rules.json'; a.click(); });
+  on('rsave', saveRules);
+}
+async function saveRules() {
+  let token = localStorage.getItem('trackstudy-token') || prompt('规则编辑口令（服务器 /opt/trackstudy/config.json 的 admin_token）：');
+  if (!token) return;
+  const r = await fetch(API + 'rules', {method: 'PUT', headers: {'Content-Type': 'application/json', 'X-Token': token}, body: JSON.stringify(RULES)});
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 403) { localStorage.removeItem('trackstudy-token'); saveBar(`<span style="color:${css('--critical')}">✗ 口令错误</span>`); return; }
+  if (!r.ok) { saveBar(`<span style="color:${css('--critical')}">✗ 保存失败：${esc(j.error || r.status)}</span>`); return; }
+  localStorage.setItem('trackstudy-token', token);
+  RULES = j.rules; SAVED = clone(RULES); rulesChanged(); drawOver(); setTool();
+  saveBar('✓ 已保存，服务器正在重算（约 10–20 秒）…'); waitRebuild();
+}
+async function waitRebuild() {
+  const before = (await (await fetch(API + 'status', {cache: 'no-store'})).json()).built_at;
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 4000));
+    const s = await (await fetch(API + 'status', {cache: 'no-store'})).json().catch(() => ({}));
+    if (s.error && !s.pending) { saveBar(`<span style="color:${css('--critical')}">✗ 重算失败，仍显示上一版结果</span>`); return; }
+    if (s.built_at && s.built_at !== before && !s.pending) { saveBar(`✓ 已按新规则重算。<a href="" onclick="location.reload();return false">刷新页面</a>更新各表格。`); return; }
+  }
+  saveBar('服务器仍在排队重算（负载较高时会推迟），稍后刷新页面。');
+}
+
 const ptXY = (e, s) => { s = Math.max(0, Math.min(e.len, s)); let i = 1; while (i < e.cs.length - 1 && e.cs[i] < s) i++;
   const f = (s - e.cs[i - 1]) / Math.max(e.cs[i] - e.cs[i - 1], 1e-9); return [e.xs[i - 1] + f * (e.xs[i] - e.xs[i - 1]), e.ys[i - 1] + f * (e.ys[i] - e.ys[i - 1])]; };
 const toLL = (x, y) => [y / KY + LAT0, x / KX + LON0];
@@ -334,16 +500,50 @@ const PL = Object.entries(D.places);
   s.innerHTML = '<option value="">（地图点选）</option>' + PL.map(([n, p]) => `<option>${esc(n)}</option>`).join(''); });
 document.getElementById('ra').value = '斋区'; document.getElementById('rb').value = '汇文楼'; document.getElementById('io').value = '斋区';
 const placeLL = n => n && D.places[n] ? [D.places[n].lon, D.places[n].lat] : null;
+function routeAB(from, to, fromN, toN, k) {
+  if (st.editVia && fromN === st.editVia.o && toN === st.editVia.d)
+    return routeVia([from, ...st.editVia.via, to], k);
+  if (st.editVia && st.editVia.both && fromN === st.editVia.d && toN === st.editVia.o)
+    return routeVia([from, ...st.editVia.via.slice().reverse(), to], k);
+  return fromN && toN && !st.editVia ? placeRoute(fromN, toN, k) : route(from, to, k);
+}
+function customBox() {
+  const box = document.getElementById('rcustom'), o = st.An, d = st.Bn;
+  if (!o || !d) { box.innerHTML = '<span class="muted">选两个地点后可按途经点自定义路线。</span>'; return; }
+  if (st.editVia) {
+    const E = st.editVia;
+    box.innerHTML = `<b>编辑 ${esc(E.o)}→${esc(E.d)} ${MODE_ZH[E.mode]}路线</b>：按顺序点地图添加途经点（已 ${E.via.length} 个）。
+      <label><input type="checkbox" id="vboth" ${E.both ? 'checked' : ''}>回程用同一路线</label><br>
+      <button class="act" id="vundo">撤销一点</button> <button class="act" id="vdone">完成</button> <button class="act" id="vcancel">取消</button>`;
+    document.getElementById('vboth').onchange = ev => { E.both = ev.target.checked; drawRoute(); };
+    document.getElementById('vundo').onclick = () => { E.via.pop(); drawRoute(); };
+    document.getElementById('vcancel').onclick = () => { st.editVia = null; drawRoute(); };
+    document.getElementById('vdone').onclick = () => {
+      RULES.routes = RULES.routes.filter(r => !(r.mode === E.mode && ((r.origin === E.o && r.dest === E.d) || (r.both && r.origin === E.d && r.dest === E.o))));
+      if (E.via.length) RULES.routes.push({origin: E.o, dest: E.d, mode: E.mode, via: E.via.map(p => p.map(v => +v.toFixed(7))), both: E.both, note: E.note || ''});
+      st.editVia = null; touched(); };
+    return;
+  }
+  const c = customFor(o, d, st.mode);
+  box.innerHTML = c ? `<span style="color:${css('--good')}">✓</span> ${esc(o)}→${esc(d)} 使用自定义${MODE_ZH[st.mode]}路线（${c.via.length} 个途经点${c.r.both ? '，回程相同' : ''}）${c.r.note ? `：<span class="muted">${esc(c.r.note)}</span>` : ''}
+      <br><button class="act" id="vedit">修改途经点</button> <button class="act" id="vdel">删除，恢复最快路线</button>`
+    : `<button class="act" id="vedit">按途经点自定义 ${esc(o)}→${esc(d)} 的${MODE_ZH[st.mode]}路线</button>`;
+  document.getElementById('vedit').onclick = () => { st.editVia = {o, d, mode: st.mode, via: c ? c.via.slice() : [], both: c ? c.r.both : true, note: c ? c.r.note : ''}; drawRoute(); };
+  if (c) document.getElementById('vdel').onclick = () => { RULES.routes = RULES.routes.filter(r => r !== c.r); touched(); };
+}
 function drawRoute() {
   routeLayer.clearLayers(); const box = document.getElementById('rres');
   const A = st.A, B = st.B;
+  customBox();
   [[A, 'A'], [B, 'B']].forEach(([p, t]) => p && L.marker([p[1], p[0]], {icon: L.divIcon({className: '', html: `<div style="background:${css('--text-primary')};color:${css('--surface-1')};border-radius:9px;width:18px;height:18px;text-align:center;font-weight:700;line-height:18px">${t}</div>`, iconSize: [18, 18]})}).addTo(routeLayer));
   if (!A || !B) { box.textContent = A ? '再点一下设置 B。' : '在地图上点两下设置 A、B，或从列表选地点。'; return; }
-  const k = key(), ab = route(A, B, k), ba = route(B, A, k);
-  if (!ab || !ba) { box.textContent = '120 m 内没有可通行道路。'; return; }
+  const k = key(), ab = routeAB(A, B, st.An, st.Bn, k), ba = routeAB(B, A, st.Bn, st.An, k);
+  if (!ab || !ba) { box.textContent = '120 m 内没有可通行道路，或途经点之间不连通（检查封禁规则）。'; return; }
+  (st.editVia ? st.editVia.via : ab.via || []).forEach((p, i) => L.marker([p[1], p[0]], {icon: L.divIcon({className: '',
+    html: `<div style="background:${css('--series-1')};color:#fff;border:2px solid ${css('--surface-1')};border-radius:9px;width:16px;height:16px;text-align:center;font-size:11px;font-weight:700;line-height:16px">${i + 1}</div>`, iconSize: [16, 16]})}).addTo(routeLayer));
   L.polyline(ba.geo, {renderer: rTop, pane: 'top', color: css('--series-2'), weight: 4, opacity: 0.9}).addTo(routeLayer);
   L.polyline(ab.geo, {renderer: rTop, pane: 'top', color: css('--series-1'), weight: 4, opacity: 0.9, dashArray: null}).addTo(routeLayer);
-  const line = (r, t, c) => `<div><span class="sw" style="background:${c}"></span><b class="ab">${t}</b> ${mins(r.t)}，${fmt(r.dist, 0)} m，↑${fmt(r.up, 1)} m ↓${fmt(r.down, 1)} m，数据覆盖 ${fmt(100 * r.cover, 0)}%</div>`;
+  const line = (r, t, c) => `<div><span class="sw" style="background:${c}"></span><b class="ab">${t}</b>${r.custom || (st.editVia && r.via) ? '（自定义）' : ''} ${mins(r.t)}，${fmt(r.dist, 0)} m，↑${fmt(r.up, 1)} m ↓${fmt(r.down, 1)} m，数据覆盖 ${fmt(100 * r.cover, 0)}%</div>`;
   const diff = ab.t - ba.t;
   box.innerHTML = `${MODE_ZH[st.mode]} · ${PER_ZH[st.per]}` + line(ab, 'A→B', css('--series-1')) + line(ba, 'B→A', css('--series-2')) +
     `<div>${Math.abs(diff) < 3 ? '两个方向基本相同' : `A→B 比 B→A ${diff > 0 ? '慢' : '快'} ${fmt(Math.abs(diff), 0)} s（${fmt(100 * Math.abs(diff) / Math.min(ab.t, ba.t), 0)}%）`}` +
@@ -351,9 +551,10 @@ function drawRoute() {
     `<div class="muted">路上时间，不含出入楼/取停车；门到路按步行 ${fmt(WALK, 2)} m/s。</div>`;
 }
 function setPlaces() { st.A = placeLL(document.getElementById('ra').value) || st.A; st.B = placeLL(document.getElementById('rb').value) || st.B; drawRoute(); }
-document.getElementById('ra').onchange = e => { st.A = placeLL(e.target.value); drawRoute(); };
-document.getElementById('rb').onchange = e => { st.B = placeLL(e.target.value); drawRoute(); };
-document.getElementById('rswap').onclick = () => { [st.A, st.B] = [st.B, st.A]; const a = document.getElementById('ra'), b = document.getElementById('rb'); [a.value, b.value] = [b.value, a.value]; drawRoute(); };
+document.getElementById('ra').onchange = e => { st.A = placeLL(e.target.value); st.An = e.target.value || null; st.editVia = null; drawRoute(); };
+document.getElementById('rb').onchange = e => { st.B = placeLL(e.target.value); st.Bn = e.target.value || null; st.editVia = null; drawRoute(); };
+document.getElementById('rswap').onclick = () => { [st.A, st.B] = [st.B, st.A]; [st.An, st.Bn] = [st.Bn, st.An]; st.editVia = null;
+  const a = document.getElementById('ra'), b = document.getElementById('rb'); [a.value, b.value] = [b.value, a.value]; drawRoute(); };
 
 // ---------- 可达圈 ----------
 const ISOS = {walk: [300, 600, 900], bike: [180, 300, 600]};
@@ -362,7 +563,7 @@ function drawIso() {
   isoLayer.clearLayers(); const box = document.getElementById('ires'); ISO = ISOS[st.mode];
   document.getElementById('ilg').innerHTML = ISO.map((t, i) => `<span><i style="background:${SEQ[2 - i]}"></i>≤${t / 60} 分钟</span>`).join('');
   if (!st.iso) { box.textContent = '选择地点或在地图上点一下。'; return; }
-  const k = key(), C = D.cost[k], rev = st.idir === 'in', S = snap(st.iso[0], st.iso[1], k);
+  const k = key(), C = graph(k).C, rev = st.idir === 'in', S = snap(st.iso[0], st.iso[1], k);
   if (!S.length) { box.textContent = '120 m 内没有可通行道路。'; return; }
   const dist = tree(S, k, rev, ISO[2] + 60);
   L.circleMarker([st.iso[1], st.iso[0]], {renderer: rTop, pane: 'top', radius: 7, color: css('--surface-1'), weight: 2, fillColor: css('--text-primary'), fillOpacity: 1}).addTo(isoLayer);
@@ -394,18 +595,22 @@ document.querySelectorAll('[name=idir]').forEach(i => i.onchange = () => { st.id
 
 m.on('click', ev => {
   const p = [ev.latlng.lng, ev.latlng.lat];
-  if (st.tool === 'route') {
-    if (!st.A || (st.A && st.B)) { st.A = p; st.B = null; document.getElementById('ra').value = ''; document.getElementById('rb').value = ''; }
-    else { st.B = p; document.getElementById('rb').value = ''; }
+  if (st.tool === 'route' && st.editVia) { st.editVia.via.push(p); drawRoute(); }
+  else if (st.tool === 'route') {
+    if (!st.A || (st.A && st.B)) { st.A = p; st.B = null; st.An = st.Bn = null; document.getElementById('ra').value = ''; document.getElementById('rb').value = ''; }
+    else { st.B = p; st.Bn = null; document.getElementById('rb').value = ''; }
     drawRoute();
   } else if (st.tool === 'iso') { st.iso = p; document.getElementById('io').value = ''; drawIso(); }
 });
 function setTool() {
   document.getElementById('tool-route').hidden = st.tool !== 'route'; document.getElementById('tool-iso').hidden = st.tool !== 'iso';
+  document.getElementById('tool-rules').hidden = st.tool !== 'rules';
+  if (st.tool === 'view' || st.tool === 'rules') hitLayer.addTo(m); else hitLayer.remove();
+  if (st.tool !== 'route') st.editVia = null;
   routeLayer.clearLayers(); isoLayer.clearLayers();
   if (st.tool === 'iso') over.remove(); else over.addTo(m);
   if (st.tool === 'route') drawRoute(); if (st.tool === 'iso') { st.iso = st.iso || placeLL(document.getElementById('io').value); drawIso(); }
-  m.getContainer().style.cursor = st.tool === 'view' ? '' : 'crosshair';
+  m.getContainer().style.cursor = st.tool === 'view' || st.tool === 'rules' ? '' : 'crosshair';
 }
 const redraw = () => { drawOver(); setTool(); renderTab(); };
 document.querySelectorAll('[name=md]').forEach(i => i.onchange = () => { st.mode = i.value; redraw(); });
@@ -622,13 +827,19 @@ TABS.about = () => { const M = D.meta;
 // ---------- 初始化 ----------
 document.querySelector('[name=md][value=bike]').checked = true;
 setPlaces(); drawOver(); setTool(); renderTab();
+// 服务器上的规则可能比本页数据新（刚保存、正在重算）：地图按最新规则预览
+if (API) fetch(API + 'rules', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).then(R => {
+  if (!R || JSON.stringify({e: R.edges, r: R.routes}) === JSON.stringify({e: SAVED.edges, r: SAVED.routes})) return;
+  RULES = clone(R); SAVED = clone(R); rulesChanged(); drawOver(); setTool();
+  saveBar('服务器上的规则比本页表格新（正在重算或刚完成），地图与路线已按最新规则显示，<a href="" onclick="location.reload();return false">刷新</a>后表格同步。');
+}).catch(() => {});
 status.textContent = `离线地图已就绪 · 数据 ${D.meta.generated}`;
 if (location.protocol.startsWith('http')) fetch('status.json', {cache: 'no-store'}).then(r => r.ok ? r.json() : null).then(s => {
   if (!s) return;
   status.textContent = `已就绪 · 数据更新于 ${s.built_at}（${s.tracks} 条 DirMap 轨迹）`;
   if (s.error) status.innerHTML += `<br><span style="color:${css('--critical')}">✗ 最近一次重算失败（${esc(s.failed_at)}），显示的是上一版结果。</span>`;
 }).catch(() => {});
-window.__trackstudy = {route, snap, tree, D, st};
+window.__trackstudy = {route, placeRoute, routeVia, snap, tree, D, st, setRule, RULES: () => RULES, map: m, EDGES};
 })();
 </script>
 </body>

@@ -8,7 +8,9 @@
     + c[道路类别]              同类道路共享效应（台阶按上行/下行分开）
     + u[路段]                  局部路段效应（向 0 收缩）
     + v[路段,方向]             方向残差（更强收缩；坡度已解释的部分不重复）
-    + β[高峰×路型]             上下课高峰，车行道与步行空间（步道/天桥/台阶，人流拥挤）分开（向 0 收缩）
+    + β·高峰×步行空间          上下课高峰只作用于步道/天桥/台阶（人流），且只能变慢（≥0，向 0 收缩）。
+                               整段出行的快慢（赶课骑得快）与该记录的配速项不可区分，所以车行道不设高峰项——
+                               否则 2 条高峰骑行会被拆成“车行道高峰更快 / 步道更慢”的假象。
     + ε                        稳健 IRLS（Huber 型）
 
 跑步与步行共享坡度/道路效应（DirMap 同样合并为 foot），各自有配速项；骑行单独拟合。
@@ -29,14 +31,21 @@ GRADE_PRIOR = {'foot': np.array([3.5, -3.5, 3.5]), 'bike': np.zeros(3)}
 # 骑行走步道/人行区需让行人、过路缘：先验 2.6 m/s；人行天桥多为坡道+台阶，推车先验 1.5 m/s（实测推车过召南天桥 ≈1.9 m/s）。
 CLASS_PRIOR = {'foot': {'steps_up': math.log(1.25 / .55), 'steps_down': math.log(1.25 / .75), 'steps_flat': math.log(1.25 / .65)},
                'bike': {'steps_up': math.log(3.4 / .5), 'steps_down': math.log(3.4 / .6), 'steps_flat': math.log(3.4 / .55),
-                        'footway': math.log(3.4 / 2.6), 'covered': math.log(3.4 / 2.6), 'footbridge': math.log(3.4 / 1.5)}}
+                        'footway': math.log(3.4 / 2.6), 'covered': math.log(3.4 / 2.6), 'footbridge': math.log(3.4 / 1.5),
+                        # 用户规则：ramp = 可骑行（如被标成台阶的坡道/与行人共用的桥），push = 必须推车
+                        'ramp': math.log(3.4 / 2.6), 'push': math.log(3.4 / 1.0)}}
 BIKE_NO = math.log(3.4 / 1.2)   # 标了禁止骑行的车行道：推车（步道已有更慢的先验，不重复）
 PEN = dict(grade=4., cls=4., edge=2., dir=6., peak=4.)
-PED = ('footway', 'footbridge', 'covered', 'cycleway', 'steps_up', 'steps_down', 'steps_flat')   # 步行空间：高峰人流
+PED = ('footway', 'footbridge', 'covered', 'cycleway', 'steps_up', 'steps_down', 'steps_flat', 'ramp', 'push')   # 步行空间：高峰人流
 
 
 def peak_key(cls):
     return 'ped' if cls in PED else 'road'
+
+
+def flat_class(cls):
+    """台阶与推车按固定速度，不再叠加坡度。"""
+    return cls.startswith('steps') or cls == 'push'
 VMAX = {'walk': 3.0, 'run': 7.0, 'bike': 12.0}
 UNIT_M, W_CAP = 40.0, 200.0   # 约每 40 m 一份权重（≈ DirMap 50 m 通道一份），单条记录单路段最多 5 份
 
@@ -121,7 +130,7 @@ def rows_from(track_id, acc, edges, commute):
             continue
         E = edges[e]
         out.append(dict(track=track_id, edge=e, dir=d, mode=m, family=FAMILY[m], period=per, m=L, s=s, t0=t0,
-                        cls=road_class(E, d), F=E['F'][d], commute=commute, bike_no=E['bike_no']))
+                        cls=road_class(E, d, FAMILY[m]), F=E['F'][d], commute=commute, bike_no=E['bike_no']))
     return out
 
 
@@ -133,7 +142,7 @@ class Fit:
         self.rows = rows
         self.prior = GRADE_PRIOR[family]; self.cprior = CLASS_PRIOR[family]
         self.ok = len(rows) >= 12 and len({r['track'] for r in rows}) >= 2
-        self.theta = self.prior.copy(); self.cls = {}; self.u = {}; self.v = {}; self.beta = {'road': 0.0, 'ped': 0.0}; self.alpha = {}
+        self.theta = self.prior.copy(); self.cls = {}; self.u = {}; self.v = {}; self.beta = {'road': 0.0, 'ped': 0.0}; self.alpha = {}; self.n_peak = {'road': 0, 'ped': 0}
         self.support = collections.defaultdict(set); self.support_dir = collections.defaultdict(set)
         for r in rows:
             self.support[r['edge']].add(r['track']); self.support_dir[(r['edge'], r['dir'])].add(r['track'])
@@ -141,7 +150,7 @@ class Fit:
             self._solve()
 
     def _offset(self, cls, F, bike_no):
-        o = self.cprior.get(cls, 0.0) + (0.0 if cls.startswith('steps') else float(F @ self.prior))
+        o = self.cprior.get(cls, 0.0) + (0.0 if flat_class(cls) else float(F @ self.prior))
         return o + (BIKE_NO if self.family == 'bike' and bike_no and cls in ('service', 'residential', 'major', 'link') else 0.0)
 
     def _solve(self):
@@ -152,37 +161,41 @@ class Fit:
             ed.setdefault(r['edge'], len(ed)); edd.setdefault((r['edge'], r['dir']), len(edd))
         P, C, U, V = len(ep), len(cl), len(ed), len(edd)
         o_th, o_c, o_u, o_v, o_b = P, P + 3, P + 3 + C, P + 3 + C + U, P + 3 + C + U + V
-        ncol = o_b + 2
+        ncol = o_b + 1
         y = np.array([math.log(r['s'] / r['m']) - self._offset(r['cls'], r['F'], r['bike_no']) for r in rows])
-        F = np.array([r['F'] if not r['cls'].startswith('steps') else np.zeros(3) for r in rows]) / .05
+        F = np.array([r['F'] if not flat_class(r['cls']) else np.zeros(3) for r in rows]) / .05
         ri, ci, vv = [], [], []
         for i, r in enumerate(rows):
             for col, val in ((ep[(r['track'], r['mode'])], 1.0), (o_c + cl[r['cls']], 1.0), (o_u + ed[r['edge']], 1.0),
                              (o_v + edd[(r['edge'], r['dir'])], 1.0),
-                             (o_b + (peak_key(r['cls']) == 'ped'), 1.0 if r['period'] == 'peak' else 0.0),
+                             (o_b, 1.0 if r['period'] == 'peak' and peak_key(r['cls']) == 'ped' else 0.0),
                              (o_th, F[i, 0]), (o_th + 1, F[i, 1]), (o_th + 2, F[i, 2])):
                 if val:
                     ri.append(i); ci.append(col); vv.append(val)
         X = coo_matrix((vv, (ri, ci)), shape=(n, ncol)).tocsr()
         w0 = np.array([min(r['m'], W_CAP) / UNIT_M for r in rows])
         pen = np.r_[np.zeros(P), np.full(3, PEN['grade']), np.full(C, PEN['cls']), np.full(U, PEN['edge']),
-                    np.full(V, PEN['dir']), PEN['peak'], PEN['peak']]
-        R = diags(np.sqrt(pen), format='csr')
-        robust = np.ones(n)
-        for _ in range(7):
-            w = np.sqrt(w0 * robust)
-            A = vstack((X.multiply(w[:, None]), R), format='csr')
-            beta = lsqr(A, np.r_[y * w, np.zeros(ncol)], atol=1e-9, btol=1e-9, iter_lim=2000)[0]
-            res = y - X @ beta
-            scale = max(.1, 1.4826 * float(np.median(np.abs(res - np.median(res)))))
-            robust = np.minimum(1., 1.5 * scale / np.maximum(np.abs(res), 1e-9))
+                    np.full(V, PEN['dir']), PEN['peak']]
+        for attempt in range(2):
+            R = diags(np.sqrt(pen), format='csr')
+            robust = np.ones(n)
+            for _ in range(7):
+                w = np.sqrt(w0 * robust)
+                A = vstack((X.multiply(w[:, None]), R), format='csr')
+                beta = lsqr(A, np.r_[y * w, np.zeros(ncol)], atol=1e-9, btol=1e-9, iter_lim=2000)[0]
+                res = y - X @ beta
+                scale = max(.1, 1.4826 * float(np.median(np.abs(res - np.median(res)))))
+                robust = np.minimum(1., 1.5 * scale / np.maximum(np.abs(res), 1e-9))
+            if beta[o_b] >= 0:
+                break
+            pen[o_b] = 1e8          # 高峰不能让人群中的步道变快：负值时固定为 0 重拟合
         self.residual_mad = scale
         self.alpha = {k: float(beta[i]) for k, i in ep.items()}
         self.theta = self.prior + beta[o_th:o_th + 3] / .05
         self.cls = {k: float(beta[o_c + i]) for k, i in cl.items()}
         self.u = {k: float(beta[o_u + i]) for k, i in ed.items()}
         self.v = {k: float(beta[o_v + i]) for k, i in edd.items()}
-        self.beta = {'road': float(beta[o_b]), 'ped': float(beta[o_b + 1])}
+        self.beta = {'road': 0.0, 'ped': max(0.0, float(beta[o_b]))}
         self.n_peak = {k: int(sum(r['period'] == 'peak' and peak_key(r['cls']) == k for r in rows)) for k in ('road', 'ped')}
         self.pace_w = collections.Counter()
         for r, ww in zip(rows, w0):
@@ -198,9 +211,9 @@ class Fit:
 
     def road_log(self, e, d, peak=False, parts=('grade', 'cls', 'edge', 'dir', 'peak')):
         """路段 e 方向 d 相对平地基准的 log 耗时（不含配速项）。"""
-        E = self.edges[e]; cls = road_class(E, d)
+        E = self.edges[e]; cls = road_class(E, d, self.family)
         out = self.cprior.get(cls, 0.0)
-        if 'grade' in parts and not cls.startswith('steps'):
+        if 'grade' in parts and not flat_class(cls):
             out += float(E['F'][d] @ self.theta)
         if 'cls' in parts:
             out += self.cls.get(cls, 0.0)
