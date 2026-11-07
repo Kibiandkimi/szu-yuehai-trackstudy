@@ -31,6 +31,23 @@ OSM 不知道哪些路实际上不能骑（台阶没标、坡道被标成台阶�
   规则存在 `/opt/trackstudy/rules.json`，每次保存前的版本留在 `state/rules-history/`；路段用 OSM way + 两端坐标定位，OSM 参照更新后对不上的规则会在重算日志里报出。
 - 初始规则（`deploy/rules.seed.json`）来自实测骑行：斋区⇄汇文楼走学生西路→深大北路，斋区⇄致理楼走学生西路→召南天桥。
 
+## 数据下载
+
+| 地址（`https://85.211.195.104` 下） | 内容 | 口令 |
+| --- | --- | --- |
+| `/trackstudy/api/data` | 文件清单（大小、下载地址）与数据更新时间 | 否 |
+| `/trackstudy/api/data/public.zip` | 公开数据：`od.csv`、`teaching_commute.csv`、`edges.csv`、`isochrones.csv`（聚合结果；单个文件也在 `/trackstudy/data/<文件>`） | 否 |
+| `/trackstudy/api/data/full.zip` | 完整结果（即 `out/`）：另含 `summary.json`、`tracks.csv`、`observed_trips.csv`、`validation.csv`、`route_choice.csv`、`edges.geojson`、`od_dorm_teaching.csv` 和带匹配轨迹的完整版 `map.html` | 是 |
+| `/trackstudy/api/data/full/<文件>` | 完整结果中的单个文件 | 是 |
+
+口令同规则编辑（`/opt/trackstudy/config.json` 的 `admin_token`），放请求头 `X-Token`，浏览器里也可加 `?token=…`；网页“方法”标签里有下载链接。
+下载的总是网页当前显示的那一次重算：服务器把每次重算的公开站点和完整结果放在同一个 `builds/<时间>/` 下（`site/`、`out/`），一起原子切换。
+
+```bash
+# 用服务器最新的完整结果替换本地 out/
+curl -fsS -H "X-Token: $TOKEN" https://85.211.195.104/trackstudy/api/data/full.zip -o /tmp/trackstudy-full.zip && unzip -o /tmp/trackstudy-full.zip -d out/
+```
+
 ## 部署与本地开发
 
 ```bash
@@ -93,6 +110,7 @@ unknown 不参与分析，需在 DirMap 里设置方式。
 | `tracks.py` | 轨迹来源合并（DirMap + 本地 KML 库）、方式标签、自动识别、CLI |
 | `sync_dirmap.py` | 本地开发：镜像服务器轨迹库 |
 | `serve.py`、`deploy/` | 服务器常驻重算与原子发布；部署脚本、systemd 单元、服务器配置 |
+| `api.py` | 规则保存与数据下载接口（serve.py 内的线程，nginx `/trackstudy/api/`） |
 | `network.py` | OSM 路网、拓扑补连、地形与方向坡度、道路类别、投影 |
 | `matching.py` | HMM 地图匹配 |
 | `model.py` | 逐点方式、路段×方向观测、稳健回归 |
@@ -103,7 +121,7 @@ unknown 不参与分析，需在 DirMap 里设置方式。
 
 `out/`（不入库）：`edges.csv|geojson` 路段×方向×方式速度与效应、`od.csv`、`od_dorm_teaching.csv`、`teaching_commute.csv`、
 `isochrones.csv`、`validation.csv`、`route_choice.csv`、`observed_trips.csv`、`tracks.csv`、`summary.json`、`map.html`（含轨迹匹配明细）。
-`site/`（服务器上为 `/opt/trackstudy/site`）：同一地图的公开版（记录匿名、无时间与原始轨迹）、`status.json` 及 `data/` 聚合 CSV。
+`site/`（服务器上为 `/opt/trackstudy/site` → `builds/<时间>/site`，完整结果在同一构建的 `out/`）：同一地图的公开版（记录匿名、无时间与原始轨迹）、`status.json` 及 `data/` 聚合 CSV。
 
 **局限**：样本少（尤其高峰骑行），多数路段效应收缩到类别水平；GPS 难以区分极近平行路；坡度效应是经配速调整后的相关，不是因果证明；
 地点用建筑群质心，宿舍到停车点/楼门的实际位置会影响几十秒。

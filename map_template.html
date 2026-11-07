@@ -853,10 +853,27 @@ TABS.about = () => { const M = D.meta;
   return `<div class="small">
   <p><b>数据</b>：轨迹来自 DirMap 共享轨迹库（与 DirMap 共用，服务器上有新轨迹或改方式后自动重算）；${M.tracks.walk} 条步行、${M.tracks.run} 条跑步、${M.tracks.bike} 条骑行轨迹（校内）；${D.meta.public ? '公开版不含逐轨迹时间与原始轨迹。' : '本地完整版。'}生成于 ${esc(M.generated)}。
   地形：${M.terrain ? `DirMap ${esc(M.terrain.name)} 共享轨迹高程（${esc(M.terrain.schema)}，${M.terrain.spacing} m 网格，${M.terrain.range[0]}–${M.terrain.range[1]} m）` : '未同步，按平地'}；路网：OSM。</p>
+  ${API ? `<p><b>下载</b>：<a href="${API}data/public.zip">公开数据 ZIP</a>（OD、教学区通勤、路段、可达圈的聚合 CSV）·
+    <a href="#" id="dlfull">完整结果 ZIP</a>（需口令，含逐轨迹明细）· <a href="${API}data" target="_blank">文件清单</a> <span id="dlmsg"></span></p>` : ''}
   <p><b>道路识别</b>：HMM 地图匹配——候选路段垂距（σ 7 m）+ 行进方向与路段切线夹角；转移代价 = |路网距离 − GPS 直线距离| / 8 m（有截断 Dijkstra）+ 逆行惩罚，可区分紧邻平行路、避免路口假倒退；楼内/操场为“离网”状态。匹配点之间的路网路径按长度分配时间，得到“记录 × 路段 × 方向”的通行观测。</p>
   <p><b>通行效率</b>：log(秒/米) 稳健回归（与 DirMap foot-efficiency-corridor-v2 同构）：每条记录的配速项（不惩罚）+ 方向性坡度（上坡 / ≤5% 缓下坡 / 陡下坡，向先验收缩）+ 道路类别（台阶上/下行分开；骑行走步道、人行天桥有推车先验）+ 路段效应 + 方向残差 + 高峰（车行道/步行空间分开）。约每 40 m 一份权重，同一记录同一路段同一方向最多 5 份。</p>
   <p><b>规划</b>：有向图，A→B 与 B→A 分别计算；骑行遵守单行。起终点投影到 120 m 内最近的路段（另保留比最近者远不超过 25 m 的至多 2 条备选），门到路按直线 ×1.3 步行。高峰 = 工作日开课前 15 分钟、下课后 15 分钟、节间 ±3 分钟。</p>
   <p><b>局限</b>：样本少（尤其骑行高峰），路段效应大多被收缩到类别水平；每次出行本身快慢差异大于道路差异。GPS 难以区分极近的平行路。坡度效应是“经配速调整后的相关”，非因果证明。</p></div>`; };
+TABS.about.after = () => { const a = document.getElementById('dlfull'); if (a) a.onclick = ev => { ev.preventDefault(); downloadFull(); }; };
+async function downloadFull() {
+  const msg = document.getElementById('dlmsg');
+  const token = localStorage.getItem('trackstudy-token') || prompt('口令（同规则编辑，服务器 /opt/trackstudy/config.json 的 admin_token）：');
+  if (!token) return;
+  msg.textContent = '下载中…';
+  const r = await fetch(API + 'data/full.zip', {headers: {'X-Token': token}, cache: 'no-store'});
+  const fail = t => { msg.innerHTML = `<span style="color:${css('--critical')}">✗ ${esc(t)}</span>`; };
+  if (r.status === 403) { localStorage.removeItem('trackstudy-token'); fail('口令错误'); return; }
+  if (!r.ok) { fail(`下载失败：${(await r.json().catch(() => ({}))).error || r.status}`); return; }
+  localStorage.setItem('trackstudy-token', token);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(await r.blob());
+  a.download = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition'))?.[1] || 'trackstudy-full.zip'; a.click();
+  msg.textContent = '';
+}
 
 // ---------- 初始化 ----------
 document.querySelector('[name=md][value=bike]').checked = true;

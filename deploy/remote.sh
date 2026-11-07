@@ -2,8 +2,10 @@
 # 服务器端安装/切换（由 deploy.sh 调用；幂等）。
 set -euo pipefail
 STAMP=$1; R=/opt/trackstudy; REL=$R/releases/$STAMP
-mkdir -p $R/builds $R/state $R/out
+mkdir -p $R/builds $R/state
 chmod 755 $R $R/builds
+# 每次重算的完整结果在 builds/<时间>/out（不经 nginx，只由下载接口凭口令提供）；out 固定指向当前站点所在的构建
+[ -L $R/out ] || { rm -rf $R/out; ln -s site/../out $R/out; }
 if [ ! -x $R/venv/bin/python ]; then
   echo "创建 venv（numpy/scipy）"; python3 -m venv $R/venv
   $R/venv/bin/pip install -q --upgrade pip && $R/venv/bin/pip install -q -r $REL/deploy/requirements.txt

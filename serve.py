@@ -5,7 +5,8 @@
 - 每 60 s 读输入指纹（DirMap tracks.json + models.json + 用户规则的内容哈希 + 代码版本）；变化后需稳定 120 s 再重算，
   避免上传/改标签/地形重建过程中反复计算。网页保存规则（api.py）后立即重算。
 - DirMap 的识别、配准、地形重建在同一台 892 MB 机器上运行：负载 >1.5 或可用内存 <250 MB 时推迟（最多 30 分钟）。
-- 在 builds/<时间> 中构建，成功后原子切换 site → builds/<时间>，保留最近 3 份；失败保留旧站点，错误写进 state/status.json，
+- 在 builds/<时间>/site（公开站点）与 builds/<时间>/out（同一次重算的完整结果，供 api.py 下载接口）中构建，
+  成功后原子切换 site → builds/<时间>/site，保留最近 3 份；失败保留旧站点，错误写进 state/status.json，
   页面读取同目录 status.json 显示数据时间与最近一次失败。
 """
 import argparse
@@ -63,22 +64,24 @@ def write_status(cfg, st):
 def build(cfg, fp):
     builds = Path(cfg['builds_dir']); builds.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime('%Y%m%dT%H%M%S'); target = builds / stamp
-    env = dict(os.environ, TRACKSTUDY_SITE=str(target), TRACKSTUDY_OUT=str(Path(cfg['out_dir'])))
+    site, out = target / 'site', target / 'out'      # out 不在 nginx alias 下，只经下载接口凭口令提供
+    out.mkdir(parents=True, exist_ok=True); out.chmod(0o700)
+    env = dict(os.environ, TRACKSTUDY_SITE=str(site), TRACKSTUDY_OUT=str(out))
     t0 = time.time()
     proc = subprocess.run(['nice', '-n', '19', sys.executable, '-B', str(ROOT / 'analyze.py'), '--no-scan'],
                           cwd=ROOT, env=env, capture_output=True, text=True, timeout=900)
     log = (proc.stdout + proc.stderr)[-6000:]
     (state_dir(cfg) / 'last-run.log').write_text(proc.stdout + proc.stderr, encoding='utf-8')
-    if proc.returncode != 0 or not (target / 'index.html').is_file():
+    if proc.returncode != 0 or not (site / 'index.html').is_file():
         shutil.rmtree(target, ignore_errors=True)
         raise RuntimeError(log[-1500:])
     st = dict(input=fp, built_at=bj(), seconds=round(time.time() - t0, 1),
               revision=code_version(), tracks=len(dirmap_store.records()), error=None)
-    (target / 'status.json').write_text(json.dumps(st, ensure_ascii=False), encoding='utf-8')
+    (site / 'status.json').write_text(json.dumps(st, ensure_ascii=False), encoding='utf-8')
     link = Path(cfg['site_link']); tmp = link.with_name(link.name + '.new')
     if tmp.is_symlink() or tmp.exists():
         tmp.unlink()
-    tmp.symlink_to(target); os.replace(tmp, link)          # 原子切换
+    tmp.symlink_to(site); os.replace(tmp, link)          # 原子切换（完整结果随之切换：site/../out）
     for old in sorted(p for p in builds.iterdir() if p.is_dir())[:-3]:
         shutil.rmtree(old, ignore_errors=True)
     return st
